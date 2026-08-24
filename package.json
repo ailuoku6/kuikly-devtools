@@ -1,0 +1,51 @@
+{
+  "name": "kuikly-devtools",
+  "version": "1.0.0",
+  "description": "Chrome-DevTools-style inspector for Kuikly (KMP) pages: live view tree, props, component state, logs and network.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ailuoku6/kuikly-devtools.git"
+  },
+  "homepage": "https://github.com/ailuoku6/kuikly-devtools#readme",
+  "bugs": {
+    "url": "https://github.com/ailuoku6/kuikly-devtools/issues"
+  },
+  "bin": {
+    "kuikly-devtools": "bin/kuikly-devtools.js"
+  },
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=16"
+  },
+  "scripts": {
+    "build:ui": "cd ui && npm install && npm run build",
+    "build:instrumentor": "./instrumentor/build.sh",
+    "build": "npm run build:instrumentor && npm run build:ui",
+    "prepack": "npm run build",
+    "test": "node test/protocol-contract.js && node test/hit-test.js && node test/blobs.js && node test/curl.js && node test/smoke.js && node test/history.js && node test/cli-servers.js && node test/inspect.js",
+    "simulate": "node test/agent-sim.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "gradle",
+    "runtime",
+    "skills",
+    "ui/dist",
+    "README.md",
+    "README-EN.md",
+    "ARCHITECTURE.md",
+    "PROTOCOL.md",
+    "PROTOCOL-EN.md"
+  ],
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "keywords": [
+    "kuikly",
+    "devtools",
+    "kotlin-multiplatform",
+    "inspector"
+  ]
+}

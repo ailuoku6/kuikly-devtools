@@ -1,0 +1,311 @@
+/*
+ * Kuikly DevTools - Gradle init script (opt-in instrumentation)
+ *
+ * Nothing in this file runs unless `-Pkuikly.devtools=true` is passed, so the normal build chain is
+ * byte-for-byte unaffected when the tool is not in use.
+ *
+ * Usage (normally driven by `npx kuikly-devtools`):
+ *   ./gradlew packLocalJSBundleDebug \
+ *       --init-script <devtools>/gradle/devtools.init.gradle \
+ *       -Pkuikly.devtools=true \
+ *       -Pkuikly.devtools.home=<abs path to kuikly-devtools> \
+ *       -Pkuikly.devtools.host=192.168.1.7 -Pkuikly.devtools.port=8089
+ *
+ * Groovy (not .kts) on purpose: an init script has no Kotlin Gradle Plugin on its classpath, so
+ * `KotlinMultiplatformExtension` cannot be referenced in a typed way. Dynamic Groovy dispatch keeps
+ * this file working across the 1.7.20 mobile pipeline and the 1.9.23-dev HarmonyOS one alike.
+ */
+
+def props = gradle.startParameter.projectProperties
+
+def flag = props['kuikly.devtools']
+if (flag == null || flag == 'false') {
+    return
+}
+
+// ---------------------------------------------------------------- configuration
+
+def devtoolsHome = props['kuikly.devtools.home']
+if (devtoolsHome == null) {
+    // Fall back to the directory this init script lives in: <home>/gradle/devtools.init.gradle
+    try {
+        devtoolsHome = buildscript.sourceFile.parentFile.parentFile.absolutePath
+    } catch (Throwable ignored) {
+    }
+}
+if (devtoolsHome == null) {
+    throw new GradleException('[kuikly-devtools] cannot resolve -Pkuikly.devtools.home')
+}
+
+def homeDir = new File(devtoolsHome as String)
+def runtimeSrcDir = new File(homeDir, 'runtime/kotlin')
+def instrumentorJar = new File(homeDir, 'gradle/libs/kuikly-devtools-instrumentor.jar')
+
+if (!runtimeSrcDir.isDirectory()) {
+    throw new GradleException("[kuikly-devtools] runtime sources missing: ${runtimeSrcDir}")
+}
+
+def host = props['kuikly.devtools.host'] ?: resolveLanIp()
+def port = props['kuikly.devtools.port'] ?: '8089'
+def sampleMs = props['kuikly.devtools.sampleMs'] ?: '300'
+// full = parse + rewrite; copy = reroute sources only, useful to isolate plumbing problems.
+def instrumentMode = props['kuikly.devtools.instrument'] ?: 'full'
+def explicitModules = (props['kuikly.devtools.modules'] ?: '')
+        .split(',').findAll { it.trim() }.collect { it.trim() }
+
+logger.lifecycle("[kuikly-devtools] enabled  host=${host} port=${port} sample=${sampleMs}ms mode=${instrumentMode}")
+
+static String resolveLanIp() {
+    def candidates = []
+    java.net.NetworkInterface.getNetworkInterfaces().each { nic ->
+        if (nic.isLoopback() || !nic.isUp() || nic.isVirtual()) return
+        nic.getInetAddresses().each { addr ->
+            if (addr instanceof java.net.Inet4Address && !addr.isLoopbackAddress()) {
+                candidates << [name: nic.name, ip: addr.hostAddress]
+            }
+        }
+    }
+    // Prefer the usual physical interfaces over bridges and VPN tunnels, which a phone cannot route to.
+    def preferred = candidates.find {
+        it.name.startsWith('en') || it.name.startsWith('eth') || it.name.startsWith('wlan')
+    }
+    return (preferred ?: candidates.find { true })?.ip ?: '127.0.0.1'
+}
+
+// ------------------------------------------------------------------ per project
+
+/*
+ * Kotlin incremental caches key on absolute source paths, and an instrumented build compiles a
+ * different source root than an ordinary one. Mixing the two makes the compiler see both copies of
+ * every file - "Redeclaration: ..." followed by an internal compiler error - and the damage outlives
+ * the instrumented build: the next *ordinary* build inherits it. That would mean this tool breaks a
+ * build it is not even part of, which defeats the whole point of being opt-in.
+ *
+ * `-Pkotlin.incremental*=false` is not honoured by every Kotlin Gradle Plugin version in play here,
+ * so instead the caches are dropped on both sides of the instrumented build. The cost is a full
+ * compile when switching modes; the benefit is that neither mode can ever corrupt the other.
+ */
+def icDirsToClean = [] as Set
+
+gradle.buildFinished {
+    icDirsToClean.each { File dir ->
+        if (dir.exists()) {
+            dir.deleteDir()
+        }
+    }
+}
+
+gradle.allprojects { Project project ->
+    project.plugins.withId('org.jetbrains.kotlin.multiplatform') {
+        project.afterEvaluate {
+            try {
+                applyDevtools(project, runtimeSrcDir, instrumentorJar, host, port, sampleMs,
+                        instrumentMode, explicitModules, icDirsToClean)
+            } catch (Throwable t) {
+                project.logger.error("[kuikly-devtools] failed on ${project.path}: ${t}")
+                throw t
+            }
+        }
+    }
+}
+
+def applyDevtools(Project project, File runtimeSrcDir, File instrumentorJar, String host,
+                  String port, String sampleMs, String instrumentMode, List explicitModules,
+                  Set icDirsToClean) {
+    def kotlinExt = project.extensions.findByName('kotlin')
+    if (kotlinExt == null) return
+
+    def commonMain = kotlinExt.sourceSets.findByName('commonMain')
+    if (commonMain == null) return
+
+    def originDirs = commonMain.kotlin.srcDirs.findAll { it.isDirectory() }.toList()
+    if (originDirs.isEmpty()) return
+
+    // Guard against re-entering after the swap (Gradle can evaluate a project more than once).
+    def workRoot = new File(project.buildDir, 'kuikly-devtools')
+    if (originDirs.any { it.absolutePath.startsWith(workRoot.absolutePath) }) return
+
+    boolean isTarget = explicitModules.isEmpty()
+            ? containsKuiklyPage(originDirs)
+            : explicitModules.contains(project.path) || explicitModules.contains(project.name)
+    if (!isTarget) {
+        project.logger.info("[kuikly-devtools] skip ${project.path} (no @Page found)")
+        return
+    }
+
+    def instrumentedDir = new File(workRoot, 'instrumented')
+    def generatedDir = new File(workRoot, 'generated')
+    def reportFile = new File(workRoot, 'instrumentation-report.md')
+    def kotlinIcDir = new File(project.buildDir, 'kotlin')
+    // Also dropped once the build finishes, so the next ordinary build starts from a clean slate.
+    icDirsToClean.add(kotlinIcDir)
+    icDirsToClean.add(new File(project.buildDir, 'klib'))
+    icDirsToClean.add(new File(project.buildDir, 'kotlin-js-store'))
+
+    // Drop caches during configuration too: instrumentKuiklySources can be UP-TO-DATE and skip its
+    // doLast, which used to leave a previous compile's original-path symbols in the JS IC cache.
+    wipeKotlinCaches(project)
+
+    // 1. Compile-time config, so the device knows where to report with no runtime setup at all.
+    writeConfig(project, generatedDir, host, port, sampleMs)
+
+    // 2. Source instrumentation task: originDirs -> instrumentedDir
+    def instrumentTask = project.tasks.register('instrumentKuiklySources') { task ->
+        task.group = 'kuikly devtools'
+        task.description = 'Instrument commonMain sources for Kuikly DevTools'
+        task.inputs.files(project.files(originDirs))
+        task.inputs.property('mode', instrumentMode)
+        task.inputs.property('host', host)
+        task.inputs.property('port', port)
+        task.inputs.property('instrumentorStamp', instrumentorJar.exists() ? instrumentorJar.lastModified() : 0L)
+        task.outputs.dir(instrumentedDir)
+        task.doLast {
+            wipeKotlinCaches(project)
+            instrumentSources(project, originDirs, instrumentedDir, instrumentorJar, instrumentMode, reportFile)
+        }
+    }
+
+    // 3. Swap commonMain onto the instrumented copy and bolt the agent runtime on.
+    // KGP 1.7 / the Kuikly plugin can re-add `src/commonMain/kotlin` after afterEvaluate (klib=true,
+    // js compilation collecting every source set). Compiling that directory *and* the instrumented
+    // copy is exactly "Redeclaration" + "private in file" + "sealed classes from different module".
+    def reroute = {
+        commonMain.kotlin.setSrcDirs([instrumentedDir, generatedDir, runtimeSrcDir])
+    }
+    reroute()
+    project.logger.lifecycle("[kuikly-devtools] ${project.path} commonMain -> ${instrumentedDir}")
+    gradle.taskGraph.whenReady { reroute() }
+
+    // 4. Everything that reads sources (Kotlin compile of every target + KSP) must wait for the task.
+    //    At execution, drop any original commonMain files that still leaked onto the compile task.
+    project.tasks.configureEach { t ->
+        if (t.name == 'instrumentKuiklySources') return
+        if (!(t.name.startsWith('compile') || t.name.startsWith('ksp'))) return
+        t.dependsOn(instrumentTask)
+        if (!(t instanceof org.gradle.api.tasks.SourceTask)) return
+        t.doFirst {
+            stripOriginKotlinSources(t, originDirs, instrumentedDir, generatedDir, runtimeSrcDir, project)
+        }
+    }
+}
+
+static void wipeKotlinCaches(Project project) {
+    [
+            new File(project.buildDir, 'kotlin'),
+            new File(project.buildDir, 'klib'),
+            new File(project.buildDir, 'kotlin-js-store'),
+            new File(project.projectDir, '.kotlin'),
+    ].each { dir ->
+        if (dir.exists()) {
+            project.logger.lifecycle("[kuikly-devtools] clearing ${dir}")
+            project.delete(dir)
+        }
+    }
+}
+
+/**
+ * compileKotlinJs (and friends) may still list `src/commonMain/kotlin` even after setSrcDirs.
+ * If the instrumented tree is already in the task inputs, drop the originals; if the swap never
+ * landed, replace originals with the instrumented copy so the compile cannot see both.
+ */
+static void stripOriginKotlinSources(org.gradle.api.tasks.SourceTask task, List originDirs,
+                                     File instrumentedDir, File generatedDir, File runtimeSrcDir,
+                                     Project project) {
+    def origRoots = originDirs.collect { it.canonicalFile }
+    def files
+    try {
+        files = task.source.files
+    } catch (Throwable ignored) {
+        return
+    }
+    def leaked = files.findAll { File f ->
+        def path = f.canonicalPath
+        origRoots.any { File root -> path == root.path || path.startsWith(root.path + File.separator) }
+    }
+    if (leaked.isEmpty()) return
+    def instPrefix = instrumentedDir.canonicalPath
+    def alreadyInstrumented = files.any { it.canonicalPath.startsWith(instPrefix) }
+    def remaining = files.findAll { File f -> !leaked.contains(f) } as Set
+    if (!alreadyInstrumented) {
+        remaining.addAll(project.fileTree(instrumentedDir).matching { include('**/*.kt') }.files)
+        remaining.addAll(project.fileTree(generatedDir).matching { include('**/*.kt') }.files)
+        remaining.addAll(project.fileTree(runtimeSrcDir).matching { include('**/*.kt') }.files)
+    }
+    task.setSource(remaining)
+    project.logger.lifecycle(
+            "[kuikly-devtools] ${task.name} dropped ${leaked.size()} original commonMain files " +
+                    "(kept ${remaining.size()})"
+    )
+}
+
+static boolean containsKuiklyPage(List<File> dirs) {
+    for (File dir : dirs) {
+        def stack = [dir] as LinkedList
+        while (!stack.isEmpty()) {
+            File current = stack.removeFirst()
+            File[] entries = current.listFiles()
+            if (entries == null) continue
+            for (File f : entries) {
+                if (f.isDirectory()) {
+                    stack.addLast(f)
+                } else if (f.name.endsWith('.kt') && f.getText('UTF-8').contains('@Page(')) {
+                    return true
+                }
+            }
+        }
+    }
+    return false
+}
+
+static void writeConfig(Project project, File generatedDir, String host, String port, String sampleMs) {
+    def pkgDir = new File(generatedDir, 'com/ailuoku6/kuikly/devtools')
+    pkgDir.mkdirs()
+    def target = new File(pkgDir, 'KDevtoolsConfig.kt')
+    def content = """\
+// GENERATED by kuikly-devtools init script. Do not edit.
+package com.ailuoku6.kuikly.devtools
+
+internal object KDevtoolsConfig {
+    const val ENABLED: Boolean = true
+
+    /** LAN address of the machine that ran the build; the device falls back to this after 127.0.0.1. */
+    const val HOST: String = "${host}"
+    const val PORT: Int = ${port}
+    const val SAMPLE_MS: Int = ${sampleMs}
+    const val BUILD_TAG: String = "${project.name}"
+}
+"""
+    // Avoid a needless write so Kotlin's incremental compiler does not see a changed input.
+    if (!target.exists() || target.getText('UTF-8') != content) {
+        target.setText(content, 'UTF-8')
+    }
+}
+
+static void instrumentSources(Project project, List<File> originDirs, File outDir,
+                              File instrumentorJar, String mode, File reportFile) {
+    project.delete(outDir)
+    outDir.mkdirs()
+    originDirs.each { File src ->
+        project.copy {
+            from(src)
+            into(outDir)
+            include('**/*.kt')
+            duplicatesStrategy = org.gradle.api.file.DuplicatesStrategy.INCLUDE
+        }
+    }
+    if (mode == 'copy') {
+        project.logger.lifecycle('[kuikly-devtools] mode=copy, sources rerouted without instrumentation')
+        return
+    }
+    if (!instrumentorJar.exists()) {
+        throw new GradleException("[kuikly-devtools] instrumentor jar missing: ${instrumentorJar}. " +
+                'Build it with `npm run build:instrumentor`, or pass -Pkuikly.devtools.instrument=copy')
+    }
+    project.javaexec {
+        classpath = project.files(instrumentorJar)
+        mainClass.set('com.ailuoku6.kuikly.devtools.instrumentor.MainKt')
+        args = [outDir.absolutePath, '--report', reportFile.absolutePath]
+        ignoreExitValue = false
+    }
+    project.logger.lifecycle("[kuikly-devtools] report -> ${reportFile}")
+}
