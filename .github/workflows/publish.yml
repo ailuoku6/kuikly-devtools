@@ -1,7 +1,7 @@
 # Publishes kuikly-devtools to npm.
 #
 # Trigger: git tag v<version> matching package.json, then push the tag.
-# Secret: NPM_TOKEN — an npm automation/granular token with publish access.
+# npm Trusted Publishing authenticates this workflow through GitHub OIDC.
 name: Publish
 
 on:
@@ -19,6 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -31,7 +32,8 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # npm Trusted Publishing requires a recent npm client; Node 24 includes it.
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
           cache: npm
 
@@ -50,5 +52,3 @@ jobs:
 
       # prepack runs npm run build (instrumentor jar + panel) before packing
       - run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

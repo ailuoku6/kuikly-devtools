@@ -204,11 +204,11 @@ npm run build:ui
 
 ### 发布到 npm
 
-仓库 Settings → Secrets and variables → Actions 中配置 `NPM_TOKEN`。把 `package.json` 的 `version` 改到要发的版本后打 tag 推送即可：
+此仓库使用 npm Trusted Publisher：在 npm 包的 Trusted Publisher 设置中，将 GitHub owner/repository、工作流文件 `.github/workflows/publish.yml` 与发布环境（留空）配置为与本仓库一致。无需在 GitHub Actions Secrets 中配置 `NPM_TOKEN`。把 `package.json` 的 `version` 改到要发的版本后打 tag 推送即可：
 
 ```bash
 git tag v0.1.3
 git push origin v0.1.3
 ```
 
-tag 必须是 `v` + `package.json` 里的版本号，GitHub Actions 会跑测试、构建插桩 jar 和面板，再 `npm publish`。
+tag 必须是 `v` + `package.json` 里的版本号，GitHub Actions 会跑测试、构建插桩 jar 和面板，并通过 GitHub OIDC 执行 `npm publish`。
