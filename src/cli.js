@@ -140,16 +140,18 @@ async function commandServe(options) {
     onEvent: ({ level, message }) => (level === 'error' ? fail(message) : warn(message)),
   });
 
-  let lastSummaryKey = '';
-  servers.hub.on('delta', (delta) => {
-    const key = `${delta.pagerId}|${delta.meta.nodeCount}`;
-    if (key === lastSummaryKey) return;
-    lastSummaryKey = key;
-    info(
-      `${delta.meta.page || delta.pagerId} (${delta.meta.platform || '?'}) ` +
-        `nodes=${delta.meta.nodeCount} logs=${delta.meta.logCount} net=${delta.meta.networkCount}`
-    );
-  });
+  if (options.debug) {
+    let lastSummaryKey = '';
+    servers.hub.on('delta', (delta) => {
+      const key = `${delta.pagerId}|${delta.meta.nodeCount}`;
+      if (key === lastSummaryKey) return;
+      lastSummaryKey = key;
+      info(
+        `${delta.meta.page || delta.pagerId} (${delta.meta.platform || '?'}) ` +
+          `nodes=${delta.meta.nodeCount} logs=${delta.meta.logCount} net=${delta.meta.networkCount}`
+      );
+    });
+  }
 
   if (!options.quiet) {
     log('');
