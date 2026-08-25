@@ -63,7 +63,7 @@ export interface SessionView {
 /**
  * Applies the same merge the server performs, so both sides converge on one tree.
  *
- * Deliberately not React state: a busy page pushes a delta every 300 ms and the tree can hold
+ * Deliberately not React state: a busy page pushes a delta every 500 ms and the tree can hold
  * thousands of nodes, so mutations happen in plain maps and components subscribe to a version
  * counter that is bumped at most once per animation frame.
  */

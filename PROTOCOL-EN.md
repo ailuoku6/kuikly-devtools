@@ -36,7 +36,7 @@ full path against the raw bridge params string is unreliable.
   "ts": 1755850000000,
   "full": false,               // true => receiver must clear its node map first
   "destroyed": false,          // true => merge this packet's logs/network, then drop the session
-  "sampleMs": 300,
+  "sampleMs": 500,
   "droppedLogs": 0,            // logs dropped by the device ring buffer since last tick
   "tree": {
     "nodes": [ /* NodeDto, changed only (or all when full) */ ],

@@ -123,7 +123,7 @@ async function run() {
     seq: 0,
     ts: Date.now(),
     full: true,
-    sampleMs: 300,
+    sampleMs: 500,
     tree: {
       nodes: [node(1, -1, 'DivView'), node(2, 1, 'TextView', { p: { color: '#FF0000', text: 'hi' } })],
       removed: [],

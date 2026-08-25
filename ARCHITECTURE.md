@@ -17,7 +17,7 @@ Kuikly DevTools 的大部分能力来自 Kuikly 已有的公开 API 和 bridge o
 | 长连接推送 | `UPDATE_INSTANCE` pager 事件 | 否 |
 | 请求/回包关联 | `FIRE_CALLBACK` 的 `callbackId` | 否 |
 | 上报通道 | Kuikly `NetworkModule.httpRequest` | 否 |
-| 定时采样 | Kuikly 的 `setTimeout(pagerId, ms) {}` | 否 |
+| 定时采样 | Kuikly 的 `setTimeout(pagerId, ms) {}`（默认 500ms） | 否 |
 | 自动挂载到 `@Page` | 改写页面类 | **是** |
 | 读取私有成员变量 | 在属主类体内生成 dumper | **是** |
 
@@ -45,7 +45,7 @@ flowchart LR
     Tree --> Agent
     Bridge --> Agent
   end
-  Agent -->|"POST 每 300ms"| Ingest["ingest 服务 :8089"]
+  Agent -->|"POST 每 500ms"| Ingest["ingest 服务 :8089"]
   Ingest -->|"commands 挂在响应体里回传"| Agent
   Ingest --> Hub["Session Hub 权威全量树"]
   Hub -->|WebSocket| UI["DevTools 面板 :8090"]

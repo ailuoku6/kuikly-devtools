@@ -47,13 +47,13 @@ if (!runtimeSrcDir.isDirectory()) {
 
 def host = props['kuikly.devtools.host'] ?: resolveLanIp()
 def port = props['kuikly.devtools.port'] ?: '8089'
-def sampleMs = props['kuikly.devtools.sampleMs'] ?: '300'
+def sampleMs = props['kuikly.devtools.sampleMs'] ?: '500'
 // full = parse + rewrite; copy = reroute sources only, useful to isolate plumbing problems.
 def instrumentMode = props['kuikly.devtools.instrument'] ?: 'full'
 def explicitModules = (props['kuikly.devtools.modules'] ?: '')
         .split(',').findAll { it.trim() }.collect { it.trim() }
 
-logger.lifecycle("[kuikly-devtools] enabled  host=${host} port=${port} sample=${sampleMs}ms mode=${instrumentMode}")
+logger.lifecycle("[kuikly-devtools] enabled  sample=${sampleMs}ms mode=${instrumentMode}")
 
 static String resolveLanIp() {
     def candidates = []

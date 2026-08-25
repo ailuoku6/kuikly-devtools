@@ -34,7 +34,7 @@ Content-Type: application/json
   "ts": 1755850000000,
   "full": false,               // true 表示接收方要先清空节点表
   "destroyed": false,          // true：页面已销毁，服务端合并本包日志/网络后删除该会话
-  "sampleMs": 300,
+  "sampleMs": 500,
   "droppedLogs": 0,            // 上次上报以来设备环形缓冲区丢掉的日志条数
   "tree": {
     "nodes": [ /* NodeDto，只含变更节点；full 时是全量 */ ],

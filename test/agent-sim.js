@@ -87,7 +87,7 @@ const dialogState = {
 
 const lastSerialized = new Map();
 let needFull = true;
-let sampleMs = 300;
+let sampleMs = 500;
 let seq = 0;
 let logSeq = 0;
 let requestSeq = 0;

@@ -140,7 +140,7 @@ function summary(pagerId: string, nodeCount: number) {
     logCount: 0,
     networkCount: 0,
     droppedLogs: 0,
-    sampleMs: 300,
+    sampleMs: 500,
     lastSeenAt: Date.now(),
     firstSeenAt: Date.now(),
     stale: false,

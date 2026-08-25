@@ -48,12 +48,13 @@ function parseArgs(argv) {
     host: null,
     ingestPort: DEFAULT_INGEST_PORT,
     panelPort: DEFAULT_PANEL_PORT,
-    sampleMs: 300,
+    sampleMs: 500,
     project: null,
     modules: null,
     task: null,
     instrument: 'full',
     adb: true,
+    debug: false,
     open: false,
     pagerId: null,
     query: null,
@@ -86,6 +87,7 @@ function parseArgs(argv) {
       case '--modules': options.modules = next(); break;
       case '--task': options.task = next(); break;
       case '--instrument': options.instrument = next(); break;
+      case '--debug': options.debug = true; break;
       case '--pager': options.pagerId = next(); break;
       case '--query':
       case '--q': options.query = next(); break;
@@ -132,7 +134,6 @@ function projectRoot(options) {
 // ---------------------------------------------------------------------- commands
 
 async function commandServe(options) {
-  const host = options.host || primaryLanIp();
   const servers = await startServers({
     ingestPort: options.ingestPort,
     panelPort: options.panelPort,
@@ -150,25 +151,33 @@ async function commandServe(options) {
     );
   });
 
-  log('');
-  log(`${COLORS.bold}Kuikly DevTools${COLORS.reset}`);
-  log(`  panel   ${COLORS.green}http://localhost:${servers.panelPort}${COLORS.reset}`);
-  log(`  ingest  http://${host}:${servers.ingestPort}  ${COLORS.dim}(device -> host)${COLORS.reset}`);
-  if (!fs.existsSync(paths.uiDist)) {
-    warn('panel bundle not built yet - run `npm run build:ui` inside the kuikly-devtools package');
+  if (!options.quiet) {
+    log('');
+    log(`${COLORS.bold}Kuikly DevTools${COLORS.reset}`);
+    log(`  panel   ${COLORS.green}http://localhost:${servers.panelPort}${COLORS.reset}`);
+    if (!fs.existsSync(paths.uiDist)) {
+      warn('panel bundle not built yet - run `npm run build:ui` inside the kuikly-devtools package');
+    }
+    log('');
   }
+  if (options.debug) logDebugConnectionDetails(options, servers.ingestPort);
+
+  if (options.adb) {
+    setupAdbReverse(servers.ingestPort, options);
+  }
+
+  return servers;
+}
+
+function logDebugConnectionDetails(options, ingestPort) {
+  const host = options.host || primaryLanIp();
+  log(`  ingest  http://${host}:${ingestPort}  ${COLORS.dim}(device -> host)${COLORS.reset}`);
   log('');
   log(`${COLORS.dim}Other reachable addresses:${COLORS.reset}`);
   for (const candidate of listLanIps()) {
     log(`${COLORS.dim}  ${candidate.name.padEnd(10)} ${candidate.ip}${COLORS.reset}`);
   }
   log('');
-
-  if (options.adb) {
-    setupAdbReverse(servers.ingestPort);
-  }
-
-  return servers;
 }
 
 /**
@@ -240,22 +249,27 @@ async function devtoolsServerStatus(options) {
 async function ensureServers(options) {
   const status = await devtoolsServerStatus(options);
   if (status.ingest && status.panel) {
-    info(`reusing running server (ingest :${options.ingestPort}, panel :${options.panelPort})`);
+    info(options.debug
+      ? `reusing running server (ingest :${options.ingestPort}, panel :${options.panelPort})`
+      : 'reusing running DevTools server');
+    if (options.debug) {
+      logDebugConnectionDetails(options, options.ingestPort);
+      if (options.adb) setupAdbReverse(options.ingestPort, options);
+    }
     return { started: false, servers: null };
   }
 
   if (status.ingest || status.panel) {
-    const missing = status.ingest ? `panel :${options.panelPort}` : `ingest :${options.ingestPort}`;
-    throw new Error(`incomplete kuikly-devtools server: ${missing} is unavailable`);
+    throw new Error('incomplete kuikly-devtools server: one of the required services is unavailable');
   }
 
   return { started: true, servers: await commandServe(options) };
 }
 
-function setupAdbReverse(port) {
+function setupAdbReverse(port, options = {}) {
   const probe = spawnSync('adb', ['devices'], { encoding: 'utf8' });
   if (probe.error) {
-    log(`${COLORS.dim}  adb not found, skipping reverse tunnel (iOS/HarmonyOS use the LAN address)${COLORS.reset}`);
+    if (options.debug) log(`${COLORS.dim}  adb not found, skipping reverse tunnel (iOS/HarmonyOS use the LAN address)${COLORS.reset}`);
     return;
   }
   const attached = (probe.stdout || '')
@@ -263,13 +277,13 @@ function setupAdbReverse(port) {
     .slice(1)
     .filter((line) => line.trim() && !line.includes('offline'));
   if (attached.length === 0) {
-    log(`${COLORS.dim}  no adb device attached, skipping reverse tunnel${COLORS.reset}`);
+    if (options.debug) log(`${COLORS.dim}  no adb device attached, skipping reverse tunnel${COLORS.reset}`);
     return;
   }
   const result = spawnSync('adb', ['reverse', `tcp:${port}`, `tcp:${port}`], { encoding: 'utf8' });
   if (result.status === 0) {
-    info(`adb reverse tcp:${port} -> host:${port} ready (device reports to 127.0.0.1)`);
-  } else {
+    if (options.debug) info(`adb reverse tcp:${port} -> host:${port} ready (device reports to 127.0.0.1)`);
+  } else if (options.debug) {
     warn(`adb reverse failed: ${(result.stderr || '').trim()}`);
   }
 }
@@ -347,12 +361,13 @@ async function commandGradle(options) {
 }
 
 async function commandBuildWithServer(options, build) {
-  const { started, servers } = await ensureServers(options);
+  const { started, servers } = await ensureServers({ ...options, quiet: true });
   const code = await build(options);
   if (code !== 0 && started) {
     warn('build failed, servers stay up so you can retry the build');
-  } else if (code === 0 && started) {
-    info('build finished - reload the page on the device to attach');
+  } else if (code === 0) {
+    info(`构建成功 - 请打开调试面板：http://localhost:${options.panelPort}`);
+    info('请在设备上重新加载页面以连接调试面板');
   }
   // A server that this process started intentionally keeps the CLI alive. A reused instance belongs
   // to the earlier process, so this invocation exits immediately after Gradle completes.
@@ -514,9 +529,9 @@ Usage
 
 Commands
   serve        Start the ingest server and the browser panel
-  dev          serve + build the JS bundle with instrumentation enabled
-  build-js     Start or reuse DevTools, then build the JS bundle (packLocalJSBundleDebug)
-  build-apk    Start or reuse DevTools, then build the hot-reload APK
+  dev          Build the instrumented JS debug artifact (iOS) and start DevTools
+  build-js     Start or reuse DevTools, then build the instrumented JS debug artifact
+  build-apk    Build the instrumented hot-reload debug APK (Android) and start DevTools
   gradle       Start or reuse DevTools, then run arbitrary instrumented Gradle tasks
   inspect      Search live page sessions, logs, network records, and nodes for AI-assisted debugging
   init-skill   Install the page-inspection Skill for Codex, Claude Code, and Cursor in this project
@@ -527,10 +542,11 @@ Options
   --host <ip>          LAN address baked into the build (default: auto-detected)
   --port <n>           Ingest port, device -> host (default: ${DEFAULT_INGEST_PORT})
   --panel-port <n>     Browser panel port (default: ${DEFAULT_PANEL_PORT})
-  --sample <ms>        Sampling interval on the device (default: 300)
+  --sample <ms>        Sampling interval on the device (default: 500)
   --project <dir>      Gradle project root (default: nearest ancestor with gradlew)
   --modules <paths>    Comma separated Gradle project paths to instrument
   --task <name>        Override the gradle task for build-js / build-apk
+  --debug              Print ingest, LAN address and adb reverse connection details
   --copy-only          Skip instrumentation, only reroute sources (plumbing check)
   --no-adb             Do not attempt \`adb reverse\`
   --pager <id>          Target page for \`inspect\` searches

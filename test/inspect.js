@@ -61,7 +61,7 @@ async function run() {
   try {
     await post(INGEST_PORT, INGEST_PATH, {
       v: 1, pagerId: 'inspect-1', page: 'SearchPage', class: 'SearchPage', platform: 'android', seq: 0,
-      full: true, ts: Date.now(), sampleMs: 300,
+      full: true, ts: Date.now(), sampleMs: 500,
       tree: {
         total: 1, changed: 1, removed: [],
         nodes: [{ id: 7, pid: -1, n: 'SearchBar', c: 'SearchBarView', r: true, cv: false,

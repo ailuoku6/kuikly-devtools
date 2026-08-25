@@ -53,7 +53,7 @@ export function App({ store }: { store: DevtoolsStore }) {
         sessions={sessions}
         activePagerId={store.activePagerId}
         device={session?.device ?? null}
-        sampleMs={session?.summary.sampleMs ?? 300}
+        sampleMs={session?.summary.sampleMs ?? 500}
         onSelect={(pagerId) => {
           setSelectedId(null);
           store.selectSession(pagerId);

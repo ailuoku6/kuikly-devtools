@@ -6,6 +6,20 @@
 
 插桩是**可选开关**。不带开关时构建产物与今天完全一致：业务源码一行不改，不新增任何依赖，插桩代码不可能进入发布产物。
 
+## 最基础用法
+
+在 Kuikly 业务工程根目录（能找到 `gradlew`）执行下面其中一条命令即可。
+
+```bash
+# iOS：编译支持调试的 JS 产物，并启动 DevTools server 和调试面板
+npx kuikly-devtools dev
+
+# Android：编译支持调试的热重载 APK，并启动 DevTools server 和调试面板
+npx kuikly-devtools build-apk
+```
+
+两条命令都会在构建成功后打印调试面板地址（默认是 `http://localhost:8090`）。在浏览器打开这个地址，再在设备上打开或刷新页面，即可查看节点树、组件状态、日志和网络请求。
+
 ### 效果预览
 
 Elements：节点树 + Live 截图，点选截图可命中树上对应节点。
@@ -18,41 +32,14 @@ Console：按级别 / tag / 关键字过滤，自动滚动。
 
 ---
 
-## 一、快速开始
-
-这是一个**独立 npm 包**。业务工程不用拷源码、不用改 `build.gradle.kts`、不用加 Gradle 插件。插桩靠 CLI 在那一次构建里注入 Gradle init script。
-
-```bash
-# 任意带 gradlew 的 Kuikly 工程根目录
-npx kuikly-devtools dev
-```
-
-也可先安装到工程里再调用：
-
-```bash
-npm install -D kuikly-devtools
-npx kuikly-devtools dev
-```
-
-从源码开发时，克隆本仓库后先构建一次改写器 jar 和面板：
-
-```bash
-git clone https://github.com/ailuoku6/kuikly-devtools.git
-cd kuikly-devtools
-npm install
-npm run build
-```
-
-`dev` 会探测本机局域网 IP、拉起 ingest（`8089`）和面板（`8090`）、尝试建立 adb reverse，并用插桩模式执行 `packLocalJSBundleDebug`。然后打开 <http://localhost:8090>，在设备上打开页面即可。
-
-### 分步执行
+## 一、常用命令
 
 ```bash
 npx kuikly-devtools serve       # 只起服务，不构建
 npx kuikly-devtools doctor      # 体检：路径、端口、网卡、adb 状态
 npx kuikly-devtools build-js    # 启动或复用服务，再插桩打 JS Bundle
 npx kuikly-devtools build-apk   # 启动或复用服务，再插桩打热重载 APK
-npx kuikly-devtools gradle -- :sampled:compileKotlinJs  # 启动或复用服务，再执行任意 Gradle 任务
+npx kuikly-devtools gradle -- :sampled:packLocalJSBundleDebug  # 启动或复用服务，再执行任意 Gradle 任务
 npx kuikly-devtools inspect sessions  # 为 AI 或命令行按需检索已连接页面
 ```
 
@@ -60,9 +47,9 @@ npx kuikly-devtools inspect sessions  # 为 AI 或命令行按需检索已连接
 
 - `npx kuikly-devtools gradle` 调用 CLI 的 `gradle` 子命令。CLI 会找到当前目录（或 `--project` 指定目录）下的 `gradlew`，并注入 DevTools 的 init script 和连接参数，因此这次构建会启用源码插桩。
 - `--` 是参数分隔符；它后面的内容原样传给 Gradle。除了任务名，也可以放 `--info`、`-x test`、`-Pkey=value` 等 Gradle 参数。
-- `:sampled` 是 Gradle 项目路径，表示 `sampled` 模块；`compileKotlinJs` 是该模块的 Kotlin/JS 编译任务。合起来只编译这个模块的 Kotlin/JS 代码，不会打完整 JS Bundle，也不会生成 APK；但会和其他构建命令一样启动 DevTools 服务，已运行时直接复用。
+- `:sampled` 是 Gradle 项目路径，表示 `sampled` 模块；`packLocalJSBundleDebug` 是该模块的 JS Bundle 调试构建任务。需要只编译 Kotlin/JS，或执行其他模块任务时，可以把它替换成对应的 Gradle task；命令会和其他构建命令一样启动 DevTools 服务，已运行时直接复用。
 
-这条命令常用于快速验证 `sampled` 模块能否通过插桩编译。需要可运行的 JS Bundle 时使用 `npx kuikly-devtools build-js`；需要其他模块或任务时，替换 `:sampled:compileKotlinJs` 即可。运行前请确认工程有 `gradlew`，且改写器已构建（源码开发时先执行 `npm run build:instrumentor`）。
+这条命令适合快速验证指定模块能否通过插桩构建。也可以直接使用 `npx kuikly-devtools build-js` 生成默认 JS Bundle，或使用 `npx kuikly-devtools build-apk` 生成 Android 调试 APK。运行前请确认工程有 `gradlew`，且改写器已构建（源码开发时先执行 `npm run build:instrumentor`）。
 
 ### AI 页面检索 Skill
 
@@ -108,10 +95,11 @@ npx kuikly-devtools inspect clean-temp
 | `--host <ip>` | 自动探测 | 编译期写进产物的局域网地址 |
 | `--port <n>` | `8089` | ingest 端口（设备 → 本机） |
 | `--panel-port <n>` | `8090` | 面板端口（浏览器访问） |
-| `--sample <ms>` | `300` | 初始采样间隔 |
+| `--sample <ms>` | `500` | 初始采样间隔 |
 | `--project <dir>` | 最近的 `gradlew` | Gradle 工程根目录 |
 | `--modules <paths>` | 自动 | 指定要插桩的 Gradle 模块路径，逗号分隔 |
 | `--task <name>` | 按命令 | 覆盖 `build-js` / `build-apk` 用的任务 |
+| `--debug` | 关 | 打印 ingest 地址、局域网地址和 `adb reverse` 连接详情 |
 | `--copy-only` | 关 | 只做源码重定向、不改写（用来隔离接线问题） |
 | `--no-adb` | 关 | 不尝试建立 reverse 隧道 |
 
@@ -192,6 +180,17 @@ rm -rf sampled/build/kotlin
 ---
 
 ## 七、二次开发
+
+如果要修改 DevTools 本身，再从源码安装并构建：
+
+```bash
+git clone https://github.com/ailuoku6/kuikly-devtools.git
+cd kuikly-devtools
+npm install
+npm run build
+```
+
+`npm run build` 会生成插桩改写器 jar 和调试面板静态资源；完成后可在任意 Kuikly 工程中使用上面的 `npx kuikly-devtools dev` 或 `npx kuikly-devtools build-apk`。
 
 ```bash
 npm install

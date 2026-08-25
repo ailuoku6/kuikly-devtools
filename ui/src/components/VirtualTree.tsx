@@ -15,7 +15,7 @@ interface Props {
 /**
  * Windowed tree renderer.
  *
- * A page like DevToolsTestPage produces thousands of nodes and the tree re-renders on every 300 ms
+ * A page like DevToolsTestPage produces thousands of nodes and the tree re-renders on every 500 ms
  * delta, so only the visible slice is mounted.
  */
 export function VirtualTree({ rows, selectedId, onSelect, onToggle, scrollToId }: Props) {

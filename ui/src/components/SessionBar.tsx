@@ -48,7 +48,7 @@ export function SessionBar({
 
       <label className="meta">
         采样{' '}
-        <select value={sampleMs || 300} onChange={(event) => onSampleChange(Number(event.target.value))}>
+        <select value={sampleMs || 500} onChange={(event) => onSampleChange(Number(event.target.value))}>
           {SAMPLE_CHOICES.map((value) => (
             <option key={value} value={value}>
               {value}ms

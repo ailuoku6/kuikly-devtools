@@ -9,6 +9,24 @@ logs and network traffic — all streaming into a browser panel while the page r
 Instrumentation is **opt-in**. Without the flag your build is byte-for-byte unchanged: no source is
 touched, no dependency is added, no instrumented code can reach a release artifact.
 
+## Quick start
+
+From a Kuikly business project root (the directory containing `gradlew`), run one of these commands.
+Each command starts or reuses the DevTools server and browser panel automatically; 
+
+```bash
+# iOS: build the instrumented JS debug artifact and start DevTools
+npx kuikly-devtools dev
+
+# Android: build the instrumented hot-reload debug APK and start DevTools
+npx kuikly-devtools build-apk
+```
+
+After a successful build, the CLI prints the DevTools panel URL (by default
+`http://localhost:8090`). Open it in a browser, then open or reload the page on the device to see
+the view tree, component state, logs, and network traffic. 
+
+
 ### Preview
 
 Elements: view tree + live screenshot; click the image to select the matching node.
@@ -19,41 +37,10 @@ Console: filter by level / tag / keyword, with auto-scroll.
 
 ![Console panel: logs and filters](snapshot/shot2.png)
 
-## Quick start
-
-This package is self-contained. The business project does not copy sources, does not add a Gradle
-plugin, and does not change `build.gradle.kts`. Instrumentation is an opt-in Gradle **init script**
-the CLI injects for that one build.
+### Other commands
 
 ```bash
-# from any Kuikly project root (the directory that has gradlew)
-npx kuikly-devtools dev
-```
-
-Or install it into the project first:
-
-```bash
-npm install -D kuikly-devtools
-npx kuikly-devtools dev
-```
-
-That single command detects your LAN address, starts both servers, sets up `adb reverse` if a device
-is attached, and builds the JS bundle with instrumentation. Then open
-[http://localhost:8090](http://localhost:8090) and open the page on the device.
-
-To work from source, clone this repo and build the panel and the instrumentor jar once:
-
-```bash
-git clone https://github.com/ailuoku6/kuikly-devtools.git
-cd kuikly-devtools
-npm install
-npm run build          # instrumentor fat-jar + panel bundle
-```
-
-Individual steps, if you prefer:
-
-```bash
-npx kuikly-devtools serve       # servers only (ingest :8089, panel :8090)
+npx kuikly-devtools serve       # start servers only; add --debug for connection details
 npx kuikly-devtools build-js    # start/reuse services, then build the instrumented JS bundle
 npx kuikly-devtools build-apk   # start/reuse services, then build the instrumented hot-reload APK
 npx kuikly-devtools gradle -- :app:assembleDebug   # start/reuse services, then run any instrumented task
@@ -127,7 +114,7 @@ whose member variables can be dumped.
 device                                     dev machine
 ──────                                     ───────────
 Pager  ─┐
-tree   ─┼─► KDevtools agent ──POST 300ms──► ingest :8089 ──WebSocket──► panel :8090
+tree   ─┼─► KDevtools agent ──POST 500ms──► ingest :8089 ──WebSocket──► panel :8090
 bridge ─┘        ▲                              │
                  └────────── commands ──────────┘
 ```
@@ -227,10 +214,11 @@ Change the interval from the panel (100 ms – 5 s) or at build time with `--sam
 | `--host <ip>` | auto-detected | LAN address baked into the build |
 | `--port <n>` | `8089` | ingest port, device → host |
 | `--panel-port <n>` | `8090` | browser panel port |
-| `--sample <ms>` | `300` | initial sampling interval |
+| `--sample <ms>` | `500` | initial sampling interval |
 | `--project <dir>` | nearest `gradlew` | Gradle project root |
 | `--modules <paths>` | auto | Gradle project paths to instrument (default: any KMP module containing a `@Page`) |
 | `--task <name>` | per command | override the Gradle task |
+| `--debug` | off | print ingest URL, LAN addresses, and `adb reverse` connection details |
 | `--copy-only` | off | reroute sources without rewriting (isolates plumbing problems) |
 | `--no-adb` | off | skip the reverse tunnel |
 
@@ -255,6 +243,15 @@ To exclude a file from instrumentation, put `kuikly-devtools:ignore` in a commen
   file since line numbers match, but editing the copy has no effect.
 
 ## Development
+
+To work on DevTools itself, clone this repository and build the panel and instrumentor once:
+
+```bash
+git clone https://github.com/ailuoku6/kuikly-devtools.git
+cd kuikly-devtools
+npm install
+npm run build          # instrumentor fat-jar + panel bundle
+```
 
 ```bash
 npm install

@@ -110,7 +110,7 @@ function envelope(over = {}) {
     seq: 0,
     ts: Date.now(),
     full: false,
-    sampleMs: 300,
+    sampleMs: 500,
     tree: { nodes: [], removed: [], total: 0, changed: 0 },
     logs: [],
     network: [],
