@@ -67,7 +67,8 @@ callback is async, so the result rides on a later ingest tick — never inlined 
 `ox/oy/ow/oh` is the captured view's **visible** page-root rect (`convertFrame` minus ancestor
 Scroller contentOffset). The panel maps a click on the image to `(ox + fx * ow, oy + fy * oh)`
 and hit-tests visual boxes: layout `f` minus ancestor `so`, then `p.transform`, clipped to
-overflow / scroller viewports.
+overflow / scroller viewports. Overlapping hits use paint order (`zIndex`, later sibling,
+descendant). Full-page overlay hosts with no fill of their own pass empty space through.
 
 | key | meaning |
 | --- | ------- |

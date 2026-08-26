@@ -113,7 +113,7 @@ npx kuikly-devtools inspect clean-temp
 
 节点树来自 `ViewContainer.templateChildren()`，也就是 DSL 结构，不是原生 view 树，因此虚拟容器和 `ComposeView` 边界也能看到。Inspector 可查看节点信息、布局、全部 props、按需读取的成员变量和 Live 截图。
 
-树上的视觉约定：紫色标签表示 `ComposeView`，蓝色标签表示普通节点，`◌` 表示没有对应原生 view 的虚拟节点，`S` 表示有可 dump 的成员变量。节点后面的 `x,y · w×h` 是相对页面根节点的**布局**坐标（`convertFrame`）。成员变量按需拉取，只有点开节点时才会通知设备 dump，避免每帧序列化整棵树的状态。Live 截图在树变化时才调用 `toImage`，最多每 2s 一帧；点击截图会按**可视**坐标命中节点（布局框减去祖先 Scroller 的 `contentOffset`，再叠 `transform`，并按 overflow 裁剪）。这让底部抽屉 / 多段页卡这类把内容放在 Scroller 里的页面，点选结果与截图一致。
+树上的视觉约定：紫色标签表示 `ComposeView`，蓝色标签表示普通节点，`◌` 表示没有对应原生 view 的虚拟节点，`S` 表示有可 dump 的成员变量。节点后面的 `x,y · w×h` 是相对页面根节点的**布局**坐标（`convertFrame`）。成员变量按需拉取，只有点开节点时才会通知设备 dump，避免每帧序列化整棵树的状态。Live 截图在树变化时才调用 `toImage`，最多每 2s 一帧；点击截图会按**可视**坐标命中节点（布局框减去祖先 Scroller 的 `contentOffset`，再叠 `transform`，并按 overflow 裁剪）。重叠时按绘制顺序：`zIndex`、后声明的兄弟、子节点；铺满全屏但不绘制自身的 overlay 会把空白处透传下去，避免挡住下面的页卡。
 
 ### Components
 

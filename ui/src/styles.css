@@ -678,6 +678,7 @@ pre.payload {
   max-width: 100%;
   vertical-align: top;
   overflow: hidden;
+  border: 1px solid var(--border);
 }
 
 .shot-stage.pickable {
@@ -688,7 +689,6 @@ pre.payload {
   display: block;
   max-width: 100%;
   height: auto;
-  border: 1px solid var(--border);
   background-color: #2a2c30;
   background-image:
     linear-gradient(45deg, #3a3d42 25%, transparent 25%),

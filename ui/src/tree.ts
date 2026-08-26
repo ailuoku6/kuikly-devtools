@@ -298,17 +298,166 @@ function clippedByAncestor(
   return false;
 }
 
+function zIndexOf(node: NodeDto): number {
+  const value = node.p?.zIndex;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+}
+
+function siblingIndex(node: NodeDto): number {
+  return node.ci ?? node.id;
+}
+
 /**
- * Map a page-root point onto the smallest, deepest node whose visual box contains it.
+ * Highest `zIndex` on [branchRoot] or any hit that sits in that subtree. A FAB with
+ * `zIndex: 100` must beat the card even when the first diverging sibling has z=0.
+ */
+function branchZ(nodes: Map<number, NodeDto>, branchRoot: NodeDto, hits: NodeDto[]): number {
+  let max = zIndexOf(branchRoot);
+  for (const hit of hits) {
+    if (hit.id !== branchRoot.id && !ancestorOf(nodes, hit.id, branchRoot.id)) continue;
+    const z = zIndexOf(hit);
+    if (z > max) max = z;
+  }
+  return max;
+}
+
+/**
+ * Kuikly paints like Android `View.z`: among siblings, higher `zIndex` wins, then later
+ * template order (`ci`). A descendant is painted on top of its ancestor.
+ *
+ * When `hits` is passed, each diverging sibling uses the max `zIndex` in its subtree so a
+ * floating button still wins over a full-page scroller that happens to contain the same pixel.
+ */
+export function comparePaintOrder(
+  nodes: Map<number, NodeDto>,
+  left: NodeDto,
+  right: NodeDto,
+  hits: NodeDto[] = []
+): number {
+  if (left.id === right.id) return 0;
+  const pathLeft = pathTo(nodes, left.id);
+  const pathRight = pathTo(nodes, right.id);
+  const shared = Math.min(pathLeft.length, pathRight.length);
+  for (let i = 0; i < shared; i++) {
+    if (pathLeft[i].id === pathRight[i].id) continue;
+    const zDelta =
+      (hits.length > 0 ? branchZ(nodes, pathLeft[i], hits) : zIndexOf(pathLeft[i])) -
+      (hits.length > 0 ? branchZ(nodes, pathRight[i], hits) : zIndexOf(pathRight[i]));
+    if (zDelta !== 0) return zDelta;
+    return siblingIndex(pathLeft[i]) - siblingIndex(pathRight[i]);
+  }
+  return pathLeft.length - pathRight.length;
+}
+
+function opacityOf(node: NodeDto): number {
+  const value = node.p?.opacity;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 1;
+}
+
+function hasOwnFill(node: NodeDto): boolean {
+  const props = node.p ?? {};
+  if (props.backgroundImage) return true;
+  const background = props.backgroundColor;
+  if (typeof background === 'string' && background.length > 0 && background !== 'transparent') {
+    if (/^0x00/i.test(background)) return false;
+    return true;
+  }
+  if (typeof background === 'number' && background !== 0) return true;
+  const name = node.n ?? '';
+  return /Text|Image|RichText/i.test(name);
+}
+
+function isLeaf(nodes: Map<number, NodeDto>, node: NodeDto): boolean {
+  for (const child of nodes.values()) {
+    if (child.pid === node.id) return false;
+  }
+  return true;
+}
+
+function ancestorOf(nodes: Map<number, NodeDto>, nodeId: number, ancestorId: number): boolean {
+  let cursor = nodes.get(nodeId);
+  while (cursor) {
+    if (cursor.pid === ancestorId) return true;
+    cursor = nodes.get(cursor.pid);
+  }
+  return false;
+}
+
+function intersectionArea(a: VisualFrame, b: VisualFrame): number {
+  const left = Math.max(a[0], b[0]);
+  const top = Math.max(a[1], b[1]);
+  const right = Math.min(a[0] + a[2], b[0] + b[2]);
+  const bottom = Math.min(a[1] + a[3], b[1] + b[3]);
+  if (right <= left || bottom <= top) return 0;
+  return (right - left) * (bottom - top);
+}
+
+function coversRoot(nodes: Map<number, NodeDto>, frame: VisualFrame): boolean {
+  let root: NodeDto | undefined;
+  for (const item of nodes.values()) {
+    if (item.pid === -1 || !nodes.has(item.pid)) {
+      root = item;
+      break;
+    }
+  }
+  const rootFrame = root?.f;
+  if (!rootFrame || rootFrame[2] <= 0 || rootFrame[3] <= 0) return false;
+  const rootArea = rootFrame[2] * rootFrame[3];
+  return intersectionArea(frame, rootFrame) / rootArea >= 0.9;
+}
+
+/** Text / image / filled box actually draws this pixel. Virtual wrappers do not. */
+function paintsPixel(nodes: Map<number, NodeDto>, node: NodeDto): boolean {
+  if (node.r === false) return false;
+  return isLeaf(nodes, node) || hasOwnFill(node);
+}
+
+/**
+ * Full-screen overlays (FAB / bottom bar hosts) fill the page but only paint their children.
+ * Empty space must fall through to whatever is underneath. Virtual nodes never paint.
+ *
+ * A scrolled list column whose visual box covers the page (after subtracting `so`) is the same
+ * kind of host: it must not steal a click unless a real painted descendant sits on that pixel.
+ */
+function isPaintedHit(
+  nodes: Map<number, NodeDto>,
+  node: NodeDto,
+  hits: NodeDto[],
+  frame: VisualFrame
+): boolean {
+  if (node.r === false) return false;
+  if (opacityOf(node) <= 0) return false;
+  if (paintsPixel(nodes, node)) return true;
+  if (
+    hits.some(
+      (hit) => hit.id !== node.id && paintsPixel(nodes, hit) && ancestorOf(nodes, hit.id, node.id)
+    )
+  ) {
+    return true;
+  }
+  return !coversRoot(nodes, frame);
+}
+
+/**
+ * Map a page-root point onto the front-most painted node.
  *
  * Visual boxes are layout `f` minus ancestor scroller `so`, then ancestor `p.transform`.
- * Overflow-clip ancestors (scrollers included) must also contain the point, so off-screen
- * scrolled content cannot steal the click.
+ * Overflow-clip ancestors (scrollers included) must also contain the point.
+ * Among overlapping hits, paint order wins: `zIndex`, then later sibling, then descendant.
+ * Unpainted overlay hosts (no fill, no child under the point) are skipped so a bottom bar
+ * or floating button does not steal clicks across the rest of the page.
  */
 export function hitTestNode(nodes: Map<number, NodeDto>, x: number, y: number): NodeDto | null {
-  let best: NodeDto | null = null;
-  let bestDepth = -1;
-  let bestArea = Infinity;
   const cache = new Map<number, VisualFrame | null>();
   const visualOf = (item: NodeDto): VisualFrame | null => {
     if (cache.has(item.id)) return cache.get(item.id) ?? null;
@@ -317,24 +466,35 @@ export function hitTestNode(nodes: Map<number, NodeDto>, x: number, y: number): 
     return frame;
   };
 
+  const containing: NodeDto[] = [];
   for (const node of nodes.values()) {
     const frame = visualOf(node);
     if (!frame || frame[2] <= 0 || frame[3] <= 0) continue;
     if (!containsPoint(frame, x, y)) continue;
     if (clippedByAncestor(nodes, node, x, y, visualOf)) continue;
+    containing.push(node);
+  }
+  if (containing.length === 0) return null;
 
-    let depth = 0;
-    let parentId = node.pid;
-    while (parentId !== -1) {
-      const parent = nodes.get(parentId);
-      if (!parent) break;
-      depth += 1;
-      parentId = parent.pid;
-    }
-    const area = frame[2] * frame[3];
-    if (depth > bestDepth || (depth === bestDepth && area < bestArea)) {
+  const painted = containing.filter((node) => {
+    const frame = visualOf(node);
+    return frame ? isPaintedHit(nodes, node, containing, frame) : false;
+  });
+  const rendered = containing.filter((node) => node.r !== false);
+  const pool = painted.length > 0 ? painted : rendered.length > 0 ? rendered : containing;
+
+  let best: NodeDto | null = null;
+  let bestArea = Infinity;
+  for (const node of pool) {
+    if (best === null) {
       best = node;
-      bestDepth = depth;
+      bestArea = (visualOf(node)?.[2] ?? 0) * (visualOf(node)?.[3] ?? 0);
+      continue;
+    }
+    const order = comparePaintOrder(nodes, node, best, containing);
+    const area = (visualOf(node)?.[2] ?? 0) * (visualOf(node)?.[3] ?? 0);
+    if (order > 0 || (order === 0 && area < bestArea)) {
+      best = node;
       bestArea = area;
     }
   }

@@ -127,9 +127,19 @@ function ScreenshotSection({
 
   const pickAt = (event: MouseEvent<HTMLDivElement>) => {
     if (!canPick || !screenshot) return null;
-    const stage = event.currentTarget.getBoundingClientRect();
-    const fx = (event.clientX - stage.left) / stage.width;
-    const fy = (event.clientY - stage.top) / stage.height;
+    const img = event.currentTarget.querySelector('img');
+    const box = img?.getBoundingClientRect() ?? event.currentTarget.getBoundingClientRect();
+    const style = img ? window.getComputedStyle(img) : null;
+    const padL = style ? parseFloat(style.borderLeftWidth) || 0 : 0;
+    const padT = style ? parseFloat(style.borderTopWidth) || 0 : 0;
+    const padR = style ? parseFloat(style.borderRightWidth) || 0 : 0;
+    const padB = style ? parseFloat(style.borderBottomWidth) || 0 : 0;
+    const contentW = box.width - padL - padR;
+    const contentH = box.height - padT - padB;
+    if (contentW <= 0 || contentH <= 0) return null;
+    const fx = (event.clientX - box.left - padL) / contentW;
+    const fy = (event.clientY - box.top - padT) / contentH;
+    if (fx < 0 || fy < 0 || fx > 1 || fy > 1) return null;
     const x = (screenshot.ox ?? 0) + fx * originW;
     const y = (screenshot.oy ?? 0) + fy * originH;
     return hitTestNode(nodes, x, y);
@@ -214,7 +224,7 @@ function ScreenshotSection({
             {screenshot.live ? '实时 · ' : ''}
             nativeRef {screenshot.id} · 采样 {screenshot.sample}
             {canPick ? ' · 点击可选中节点' : ''}
-            {hover ? ` · ${hover.n} #${hover.id}` : ''}
+            {hover ? ` · ${hover.c} #${hover.id}` : ''}
           </div>
         </div>
       ) : (

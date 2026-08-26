@@ -173,10 +173,128 @@ function clippedByAncestor(nodes, node, x, y, visualOf) {
   return false;
 }
 
+function zIndexOf(node) {
+  const value = node.p && node.p.zIndex;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+}
+
+function siblingIndex(node) {
+  return node.ci ?? node.id;
+}
+
+function comparePaintOrder(nodes, left, right, hits) {
+  if (left.id === right.id) return 0;
+  const pathLeft = pathTo(nodes, left.id);
+  const pathRight = pathTo(nodes, right.id);
+  const shared = Math.min(pathLeft.length, pathRight.length);
+  const stack = hits || [];
+  for (let i = 0; i < shared; i++) {
+    if (pathLeft[i].id === pathRight[i].id) continue;
+    const zDelta =
+      (stack.length > 0 ? branchZ(nodes, pathLeft[i], stack) : zIndexOf(pathLeft[i])) -
+      (stack.length > 0 ? branchZ(nodes, pathRight[i], stack) : zIndexOf(pathRight[i]));
+    if (zDelta !== 0) return zDelta;
+    return siblingIndex(pathLeft[i]) - siblingIndex(pathRight[i]);
+  }
+  return pathLeft.length - pathRight.length;
+}
+
+function branchZ(nodes, branchRoot, hits) {
+  let max = zIndexOf(branchRoot);
+  for (const hit of hits) {
+    if (hit.id !== branchRoot.id && !ancestorOf(nodes, hit.id, branchRoot.id)) continue;
+    const z = zIndexOf(hit);
+    if (z > max) max = z;
+  }
+  return max;
+}
+
+function opacityOf(node) {
+  const value = node.p && node.p.opacity;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 1;
+}
+
+function hasOwnFill(node) {
+  const props = node.p || {};
+  if (props.backgroundImage) return true;
+  const background = props.backgroundColor;
+  if (typeof background === 'string' && background.length > 0 && background !== 'transparent') {
+    if (/^0x00/i.test(background)) return false;
+    return true;
+  }
+  if (typeof background === 'number' && background !== 0) return true;
+  const name = node.n || '';
+  return /Text|Image|RichText/i.test(name);
+}
+
+function isLeaf(nodes, node) {
+  for (const child of nodes.values()) {
+    if (child.pid === node.id) return false;
+  }
+  return true;
+}
+
+function ancestorOf(nodes, nodeId, ancestorId) {
+  let cursor = nodes.get(nodeId);
+  while (cursor) {
+    if (cursor.pid === ancestorId) return true;
+    cursor = nodes.get(cursor.pid);
+  }
+  return false;
+}
+
+function intersectionArea(a, b) {
+  const left = Math.max(a[0], b[0]);
+  const top = Math.max(a[1], b[1]);
+  const right = Math.min(a[0] + a[2], b[0] + b[2]);
+  const bottom = Math.min(a[1] + a[3], b[1] + b[3]);
+  if (right <= left || bottom <= top) return 0;
+  return (right - left) * (bottom - top);
+}
+
+function coversRoot(nodes, frame) {
+  let root;
+  for (const item of nodes.values()) {
+    if (item.pid === -1 || !nodes.has(item.pid)) {
+      root = item;
+      break;
+    }
+  }
+  const rootFrame = root && root.f;
+  if (!rootFrame || rootFrame[2] <= 0 || rootFrame[3] <= 0) return false;
+  return intersectionArea(frame, rootFrame) / (rootFrame[2] * rootFrame[3]) >= 0.9;
+}
+
+function paintsPixel(nodes, node) {
+  if (node.r === false) return false;
+  return isLeaf(nodes, node) || hasOwnFill(node);
+}
+
+function isPaintedHit(nodes, node, hits, frame) {
+  if (node.r === false) return false;
+  if (opacityOf(node) <= 0) return false;
+  if (paintsPixel(nodes, node)) return true;
+  if (
+    hits.some(
+      (hit) => hit.id !== node.id && paintsPixel(nodes, hit) && ancestorOf(nodes, hit.id, node.id)
+    )
+  ) {
+    return true;
+  }
+  return !coversRoot(nodes, frame);
+}
+
 function hitTestNode(nodes, x, y) {
-  let best = null;
-  let bestDepth = -1;
-  let bestArea = Infinity;
   const cache = new Map();
   const visualOf = (item) => {
     if (cache.has(item.id)) return cache.get(item.id);
@@ -185,24 +303,35 @@ function hitTestNode(nodes, x, y) {
     return frame;
   };
 
+  const containing = [];
   for (const node of nodes.values()) {
     const frame = visualOf(node);
     if (!frame || frame[2] <= 0 || frame[3] <= 0) continue;
     if (!containsPoint(frame, x, y)) continue;
     if (clippedByAncestor(nodes, node, x, y, visualOf)) continue;
+    containing.push(node);
+  }
+  if (containing.length === 0) return null;
 
-    let depth = 0;
-    let parentId = node.pid;
-    while (parentId !== -1) {
-      const parent = nodes.get(parentId);
-      if (!parent) break;
-      depth += 1;
-      parentId = parent.pid;
-    }
-    const area = frame[2] * frame[3];
-    if (depth > bestDepth || (depth === bestDepth && area < bestArea)) {
+  const painted = containing.filter((node) => {
+    const frame = visualOf(node);
+    return frame ? isPaintedHit(nodes, node, containing, frame) : false;
+  });
+  const rendered = containing.filter((node) => node.r !== false);
+  const pool = painted.length > 0 ? painted : rendered.length > 0 ? rendered : containing;
+
+  let best = null;
+  let bestArea = Infinity;
+  for (const node of pool) {
+    if (best === null) {
       best = node;
-      bestDepth = depth;
+      bestArea = (visualOf(node)[2] || 0) * (visualOf(node)[3] || 0);
+      continue;
+    }
+    const order = comparePaintOrder(nodes, node, best, containing);
+    const area = (visualOf(node)[2] || 0) * (visualOf(node)[3] || 0);
+    if (order > 0 || (order === 0 && area < bestArea)) {
+      best = node;
       bestArea = area;
     }
   }
@@ -293,9 +422,86 @@ assert.strictEqual(
   'outside the scaled box falls through to the page'
 );
 
+// Floating button + bottom bar sit in a later full-page overlay. Tree depth must not beat paint order.
+const overlay = new Map([
+  [1, { id: 1, pid: -1, ci: 0, n: 'Page', r: true, f: [0, 0, 393, 852] }],
+  [2, { id: 2, pid: 1, ci: 0, n: 'Map', r: true, f: [0, 0, 393, 852], p: { zIndex: -2 } }],
+  [3, { id: 3, pid: 1, ci: 1, n: 'Card', r: true, f: [0, 400, 393, 452], p: { backgroundColor: '0xFFFFFFFF' } }],
+  [4, { id: 4, pid: 3, ci: 0, n: 'Row', r: true, f: [0, 740, 393, 80], p: { backgroundColor: '0xFFEEEEEE' } }],
+  [5, { id: 5, pid: 1, ci: 2, n: 'Menus', r: false, cv: true, f: [0, 0, 393, 852] }],
+  [6, { id: 6, pid: 5, ci: 0, n: 'Fab', r: true, f: [333, 742, 48, 48], p: { zIndex: 100, backgroundColor: '0xFFFFFFFF' } }],
+  [7, { id: 7, pid: 5, ci: 1, n: 'BarHost', r: true, f: [0, 0, 393, 852] }],
+  [8, { id: 8, pid: 7, ci: 0, n: 'Bar', r: true, f: [0, 756, 393, 96], p: { backgroundImage: 'linear-gradient' } }],
+  [9, { id: 9, pid: 8, ci: 0, n: 'Go', r: true, f: [200, 780, 120, 48], p: { backgroundColor: '0xFF00B83D' } }],
+]);
+
+assert.strictEqual(
+  hitTestNode(overlay, 350, 760).n,
+  'Fab',
+  'zIndex 100 FAB wins over a deeper card row under the same pixel'
+);
+assert.strictEqual(
+  hitTestNode(overlay, 220, 800).n,
+  'Go',
+  'bottom bar button wins over the card row it covers'
+);
+assert.strictEqual(
+  hitTestNode(overlay, 20, 500).n,
+  'Card',
+  'empty overlay space falls through to the card'
+);
+assert.strictEqual(
+  hitTestNode(overlay, 20, 100).n,
+  'Map',
+  'empty overlay space over the map falls through to the map'
+);
+
+// Nested scroller + virtual list rows covering the page + later FAB overlay.
+// RouteDetail-style: inner list `so` pulls the content column over the FAB pixel;
+// virtual (r=false) rows must not make that column a painted hit.
+const nestedOverlay = new Map([
+  [1, { id: 1, pid: -1, ci: 0, n: 'Page', c: 'Page', r: true, f: [0, 0, 393, 886] }],
+  [2, { id: 2, pid: 1, ci: 0, n: 'Root', c: 'DivView', r: true, f: [0, 0, 393, 886] }],
+  [30, { id: 30, pid: 2, ci: 3, n: 'Card', c: 'TouchControl', r: true, f: [0, 0, 393, 886] }],
+  [37, { id: 37, pid: 30, ci: 0, n: 'Scroller', c: 'ScrollerView', r: true, f: [0, 0, 393, 886], so: [0, 638], p: { overflow: 1 } }],
+  [54, { id: 54, pid: 37, ci: 0, n: 'List', c: 'WaterfallListView', r: true, f: [0, 687, 393, 837], so: [0, 266], p: { overflow: 1 } }],
+  [721, { id: 721, pid: 54, ci: 0, n: 'Content', c: 'RouteDetailContent', r: true, cv: true, f: [0, 903, 393, 888] }],
+  [722, { id: 722, pid: 721, ci: 0, n: 'Col', c: 'DivView', r: true, f: [0, 903, 393, 888] }],
+  [875, { id: 875, pid: 722, ci: 10, n: 'Row', c: 'DivView', r: false, f: [0, 1612, 393, 83] }],
+  [881, { id: 881, pid: 875, ci: 0, n: 'Stop', c: 'TextView', r: true, f: [54, 1612, 72, 21] }],
+  [321, { id: 321, pid: 2, ci: 6, n: 'Host', c: 'ConditionView', r: false, f: [0, 0, 0, 0] }],
+  [322, { id: 322, pid: 321, ci: 0, n: 'Menus', c: 'BottomMenusView', r: false, cv: true, f: [0, 0, 393, 886] }],
+  [389, { id: 389, pid: 322, ci: 0, n: 'Fab', c: 'DivView', r: true, f: [333, 742, 48, 48], p: { zIndex: 100, backgroundColor: '0xFFFFFFFF' } }],
+  [391, { id: 391, pid: 389, ci: 0, n: 'Icon', c: 'ImageView', r: true, f: [347, 748, 20, 20] }],
+  [324, { id: 324, pid: 322, ci: 1, n: 'Bar', c: 'DivView', r: true, f: [0, 790, 393, 96], p: { backgroundImage: 'linear-gradient' } }],
+]);
+
+assert.strictEqual(
+  hitTestNode(nestedOverlay, 357, 766).c,
+  'ImageView',
+  'FAB icon wins over a scrolled RouteDetailContent column that visually covers the same pixel'
+);
+assert.strictEqual(
+  hitTestNode(nestedOverlay, 340, 750).n,
+  'Fab',
+  'FAB padding (not the 20px icon) still wins over RouteDetailContent'
+);
+assert.strictEqual(
+  hitTestNode(nestedOverlay, 200, 830).n,
+  'Bar',
+  'bottom bar wins over the scrolled content column'
+);
+assert.strictEqual(
+  hitTestNode(nestedOverlay, 70, 715).n,
+  'Stop',
+  'clicking a real list text still selects the text, not the overlay'
+);
+
 const ts = fs.readFileSync(path.join(__dirname, '..', 'ui', 'src', 'tree.ts'), 'utf8');
 assert.ok(ts.includes('export function hitTestNode'), 'tree.ts must export hitTestNode');
 assert.ok(ts.includes('export function visualFrame'), 'tree.ts must export visualFrame');
+assert.ok(ts.includes('export function comparePaintOrder'), 'tree.ts must export comparePaintOrder');
 assert.ok(ts.includes('node.so'), 'tree.ts must read scroller contentOffset');
+assert.ok(ts.includes('zIndex'), 'tree.ts must read zIndex for paint order');
 
 process.stdout.write('hit-test: ok\n');

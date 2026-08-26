@@ -201,7 +201,8 @@ no tree change and no pending screenshot does not POST just because a log line a
 page sends nothing. Member variables are dumped only for nodes
 the panel has open. While Elements is open, live page screenshots (`Pager.toImage`) run only when
 the tree changed, at most every 2 s, and pause if the browser tab or the preview is hidden. Clicking
-the image hit-tests visual boxes (layout `f` minus ancestor Scroller `so`, plus `transform`).
+the image hit-tests visual boxes (layout `f` minus ancestor Scroller `so`, plus `transform`),
+then ranks overlapping hits by paint order (`zIndex`, later sibling, descendant).
 
 The server keeps 20 000 logs and 2 000 network records per page for the page's whole lifetime. The
 device only buffers what has not yet been delivered (2 000 logs / 500 requests).

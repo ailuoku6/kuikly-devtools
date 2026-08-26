@@ -58,7 +58,7 @@ Content-Type: application/json
 预览滚出视口时会关掉 `live`。`DeclarativeBaseView.toImage(DATA_URI)` 回调异步，结果挂在后续 ingest 上。
 
 `ox/oy/ow/oh` 是被截图 view 相对页面根的**可视**矩形（`convertFrame` 再减去祖先 Scroller 的 contentOffset），单位与命中测试使用的视觉坐标相同。面板把点击换算成
-`(ox + fx * ow, oy + fy * oh)`，再对节点树做命中测试：用 `f` 减去祖先 `so`，叠 `p.transform`，并按 `overflow` / Scroller 视口裁剪。
+`(ox + fx * ow, oy + fy * oh)`，再对节点树做命中测试：用 `f` 减去祖先 `so`，叠 `p.transform`，并按 `overflow` / Scroller 视口裁剪。重叠时按绘制顺序（`zIndex`、后声明兄弟、子节点）；铺满全屏且自身无填充的 overlay 把空白处透传给下层。
 
 | key | 含义 |
 | --- | --- |
