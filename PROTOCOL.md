@@ -57,8 +57,8 @@ Content-Type: application/json
 每 2000ms 一帧（并且至少间隔上一次耗时的 2 倍），ingest 在飞时跳过。面板在浏览器标签页隐藏或截图
 预览滚出视口时会关掉 `live`。`DeclarativeBaseView.toImage(DATA_URI)` 回调异步，结果挂在后续 ingest 上。
 
-`ox/oy/ow/oh` 是被截图 view 相对页面根的矩形，单位与 `NodeDto.f` 相同。面板把点击换算成
-`(ox + fx * ow, oy + fy * oh)` 再对节点树做命中测试。
+`ox/oy/ow/oh` 是被截图 view 相对页面根的**可视**矩形（`convertFrame` 再减去祖先 Scroller 的 contentOffset），单位与命中测试使用的视觉坐标相同。面板把点击换算成
+`(ox + fx * ow, oy + fy * oh)`，再对节点树做命中测试：用 `f` 减去祖先 `so`，叠 `p.transform`，并按 `overflow` / Scroller 视口裁剪。
 
 | key | 含义 |
 | --- | --- |
@@ -83,8 +83,9 @@ Content-Type: application/json
 | `c` | string | Kotlin 类的 `simpleName` |
 | `r` | bool | 是否有 `RenderView`（false 表示虚拟 / 被扁平化的节点） |
 | `cv` | bool | 是否是 `ComposeView`（驱动 Components 面板） |
-| `f` | `[x,y,w,h]` | **相对页面根节点**的坐标，由 `convertFrame(frame, null)` 计算 |
+| `f` | `[x,y,w,h]` | **相对页面根节点**的**布局**坐标，由 `convertFrame(frame, null)` 计算。Kuikly 的 `convertFrame` **不计入** Scroller `contentOffset` 和 `transform` |
 | `lf` | `[x,y]` | 相对 dom 父节点的偏移 |
+| `so` | `[offsetX, offsetY]` | 仅 `ScrollerView`（含 List / WaterfallList）：当前 `curOffsetX/Y`。滚动时只脏这一条，避免整棵子树每帧重传 |
 | `p` | object | `attr.copyPropsMap()` |
 | `hs` | bool | 该节点或其 attr 装了状态 dumper |
 | `s` | object | 插桩生成的成员变量，**仅面板展开的节点才有** |

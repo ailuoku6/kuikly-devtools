@@ -12,6 +12,7 @@ Kuikly DevTools 的大部分能力来自 Kuikly 已有的公开 API 和 bridge o
 | 节点 id | `AbstractBaseView.nativeRef` | 否 |
 | 属性 | `Props.copyPropsMap()` | 否 |
 | 页面绝对坐标 | `AbstractBaseView.frame` + `convertFrame(frame, null)` | 否 |
+| Scroller 偏移 | `ScrollerView.curOffsetX/Y`（节点字段 `so`） | 否 |
 | 日志 | `BridgeManager` 的 `IBridgeCallObserver` → `KRLogModule` | 否 |
 | 网络请求 | bridge observer → HTTP、TDF `network.fetch`、长连接模块 | 否 |
 | 长连接推送 | `UPDATE_INSTANCE` pager 事件 | 否 |
@@ -167,4 +168,5 @@ Android 默认通过 `adb reverse tcp:8089 tcp:8089` 访问本机；iOS 和鸿�
 - 打开节点会读取其 `by lazy` 属性，因此可能触发该属性初始化
 - 树是采样数据，两次 tick 之间出现又消失的变化不会被记录
 - 截图依赖 Kuikly 2.17+ 的 `DeclarativeBaseView.toImage`；虚拟节点没有 `renderView`，不能单独 Capture node
+- 截图点选使用可视坐标（布局 `f` − 祖先 `ScrollerView` 的 `so`，再叠 `p.transform`）。不是 `ScrollerView` 子类的自定义滚动容器没有 `so`，点选仍可能偏差
 - 插桩源码是副本；行号与原文件一致，但修改副本不会影响下一次构建

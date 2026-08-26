@@ -177,6 +177,7 @@ function compactNode(node) {
     composeView: node.cv,
     frame: node.f,
     localFrame: node.lf,
+    scrollOffset: node.so,
     hasState: node.hs,
     propKeys: node.p && typeof node.p === 'object' ? Object.keys(node.p) : [],
     stateKeys: node.s && typeof node.s === 'object' ? Object.keys(node.s) : [],

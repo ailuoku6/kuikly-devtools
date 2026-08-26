@@ -3,7 +3,7 @@ import type { CSSProperties, MouseEvent, ReactNode } from 'react';
 import { copyText } from '../copy';
 import type { NodeDto, ScreenshotDto } from '../protocol';
 import { LIVE_SHOT_INTERVAL_MS, LIVE_SHOT_SAMPLE } from '../protocol';
-import { hitTestNode, overlayBox, pathTo } from '../tree';
+import { hitTestNode, overlayBox, pathTo, visualFrame } from '../tree';
 
 interface Props {
   node: NodeDto | null;
@@ -137,10 +137,10 @@ function ScreenshotSection({
 
   const hover = hoverId !== null ? nodes.get(hoverId) ?? null : null;
   const hoverBox = hover
-    ? overlayBox(hover, screenshot?.ox ?? 0, screenshot?.oy ?? 0, originW, originH)
+    ? overlayBox(hover, screenshot?.ox ?? 0, screenshot?.oy ?? 0, originW, originH, nodes)
     : null;
   const selectedBox = node
-    ? overlayBox(node, screenshot?.ox ?? 0, screenshot?.oy ?? 0, originW, originH)
+    ? overlayBox(node, screenshot?.ox ?? 0, screenshot?.oy ?? 0, originW, originH, nodes)
     : null;
 
   return (
@@ -256,6 +256,12 @@ function NodeInspector({
   onSelect: (id: number) => void;
 }) {
   const ancestry = pathTo(nodes, node.id);
+  const visual = visualFrame(nodes, node);
+  const layout = node.f;
+  const showVisual =
+    visual &&
+    layout &&
+    (visual[0] !== layout[0] || visual[1] !== layout[1] || visual[2] !== layout[2] || visual[3] !== layout[3]);
 
   return (
     <>
@@ -294,6 +300,14 @@ function NodeInspector({
           <Row k="页面 Y" v={node.f?.[1] ?? '-'} />
           <Row k="宽度" v={node.f?.[2] ?? '-'} />
           <Row k="高度" v={node.f?.[3] ?? '-'} />
+          {showVisual && visual && (
+            <>
+              <Row k="可视 X" v={roundVisual(visual[0])} />
+              <Row k="可视 Y" v={roundVisual(visual[1])} />
+              <Row k="可视宽" v={roundVisual(visual[2])} />
+              <Row k="可视高" v={roundVisual(visual[3])} />
+            </>
+          )}
           <Row k="相对父级 X" v={node.lf?.[0] ?? '-'} />
           <Row k="相对父级 Y" v={node.lf?.[1] ?? '-'} />
         </div>
@@ -347,6 +361,10 @@ function SubTitle({ children }: { children: ReactNode }) {
       {children}
     </div>
   );
+}
+
+function roundVisual(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 function BoxModel({ node }: { node: NodeDto }) {

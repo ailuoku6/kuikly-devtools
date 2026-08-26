@@ -3,9 +3,11 @@ package com.ailuoku6.kuikly.devtools
 import com.tencent.kuikly.core.base.ComposeView
 import com.tencent.kuikly.core.base.DeclarativeBaseView
 import com.tencent.kuikly.core.base.ViewContainer
+import com.tencent.kuikly.core.layout.Frame
 import com.tencent.kuikly.core.nvi.serialization.json.JSONArray
 import com.tencent.kuikly.core.nvi.serialization.json.JSONObject
 import com.tencent.kuikly.core.pager.Pager
+import com.tencent.kuikly.core.views.ScrollerView
 
 internal class TreeDelta(
     val nodes: JSONArray,
@@ -129,6 +131,16 @@ internal class KDevtoolsTree(private val pager: Pager) {
             })
         }
 
+        // Kuikly convertFrame ignores scroller contentOffset. The panel maps `f` through ancestor
+        // `so` so screenshot pick matches what Pager.toImage actually drew.
+        val scroller = view as? ScrollerView<*, *>
+        if (scroller != null) {
+            json.put("so", JSONArray().apply {
+                put(round(scroller.curOffsetX))
+                put(round(scroller.curOffsetY))
+            })
+        }
+
         val attr = try {
             view.getViewAttr()
         } catch (t: Throwable) {
@@ -157,8 +169,49 @@ internal class KDevtoolsTree(private val pager: Pager) {
         "?"
     }
 
-    private fun round(value: Float): Double {
-        val scaled = (value * 100f).toInt()
-        return scaled / 100.0
+    private fun round(value: Float): Double = roundFrame(value)
+}
+
+/**
+ * Page-root rect of [view] as it appears on screen: layout [convertFrame] minus ancestor
+ * [ScrollerView] content offsets. Transform is still ignored here (the panel applies `p.transform`).
+ *
+ * Used for screenshot `ox/oy/ow/oh` so a captured node lines up with the pick overlay.
+ */
+internal fun pageVisualFrame(view: DeclarativeBaseView<*, *>): Frame? {
+    val local = try {
+        view.frame
+    } catch (t: Throwable) {
+        return null
     }
+    val absolute = try {
+        view.convertFrame(local, null)
+    } catch (t: Throwable) {
+        local
+    }
+    var x = absolute.x
+    var y = absolute.y
+    var parent = try {
+        view.domParent
+    } catch (t: Throwable) {
+        null
+    }
+    while (parent != null) {
+        val scroller = parent as? ScrollerView<*, *>
+        if (scroller != null) {
+            x -= scroller.curOffsetX
+            y -= scroller.curOffsetY
+        }
+        parent = try {
+            parent.domParent
+        } catch (t: Throwable) {
+            null
+        }
+    }
+    return Frame(x, y, local.width, local.height)
+}
+
+internal fun roundFrame(value: Float): Double {
+    val scaled = (value * 100f).toInt()
+    return scaled / 100.0
 }

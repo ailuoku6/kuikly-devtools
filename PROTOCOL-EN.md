@@ -64,8 +64,10 @@ at most every 2000 ms (and at least 2× the last capture cost), skips while an i
 and the panel turns `live` off when the browser tab or the screenshot preview is hidden. The
 callback is async, so the result rides on a later ingest tick — never inlined in the HTTP response.
 
-`ox/oy/ow/oh` is the captured view's page-root rect, same units as `NodeDto.f`. The panel maps a
-click on the image to `(ox + fx * ow, oy + fy * oh)` and hit-tests the tree.
+`ox/oy/ow/oh` is the captured view's **visible** page-root rect (`convertFrame` minus ancestor
+Scroller contentOffset). The panel maps a click on the image to `(ox + fx * ow, oy + fy * oh)`
+and hit-tests visual boxes: layout `f` minus ancestor `so`, then `p.transform`, clipped to
+overflow / scroller viewports.
 
 | key | meaning |
 | --- | ------- |
@@ -89,8 +91,9 @@ Keys are short because a full snapshot of a busy page carries thousands of them.
 | `c`  | string    | Kotlin class simple name |
 | `r`  | bool      | has a `RenderView` (false = virtual / flattened node) |
 | `cv` | bool      | is a `ComposeView` (drives the Components panel) |
-| `f`  | `[x,y,w,h]` | frame in **page-root** coordinates, via `convertFrame(frame, null)` |
+| `f`  | `[x,y,w,h]` | **layout** frame in page-root coordinates, via `convertFrame(frame, null)` (ignores scroll/transform) |
 | `lf` | `[x,y]`   | offset within the dom parent |
+| `so` | `[offsetX, offsetY]` | `ScrollerView.curOffsetX/Y` only. A scroll dirties this one node instead of every descendant |
 | `p`  | object    | `attr.copyPropsMap()` |
 | `hs` | bool      | a state dumper is installed for this node or its attr |
 | `s`  | object    | instrumented member variables — only for nodes the panel opened |

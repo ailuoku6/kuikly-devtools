@@ -51,7 +51,7 @@ assertContains(
 );
 
 const treeKeys = kotlinKeys('KDevtoolsTree.kt');
-assertContains(treeKeys, ['id', 'pid', 'ci', 'n', 'c', 'r', 'cv', 'f', 'lf', 'p', 'hs', 's', 'as'], 'NodeDto');
+assertContains(treeKeys, ['id', 'pid', 'ci', 'n', 'c', 'r', 'cv', 'f', 'lf', 'so', 'p', 'hs', 's', 'as'], 'NodeDto');
 
 const logKeys = kotlinKeys('KDevtoolsLog.kt');
 assertContains(logKeys, ['seq', 'lv', 'tag', 'msg', 'ts'], 'LogDto');
@@ -64,7 +64,7 @@ assertContains(
 
 // --- the TypeScript side must declare every key the agent sends ----------------
 const protocolTs = fs.readFileSync(PROTOCOL_TS, 'utf8');
-for (const key of ['ci', 'hs', 'cv', 'lf', 'stack', 'droppedLogs', 'sampleMs', 'sid', 'destroyed', 'kind', 'msgs', 'frames', 'screenshot', 'shot', 'live', 'ox', 'oy', 'ow', 'oh', 'blobs', 'rspChars', 'reqChars', 'hdr']) {
+for (const key of ['ci', 'hs', 'cv', 'lf', 'so', 'stack', 'droppedLogs', 'sampleMs', 'sid', 'destroyed', 'kind', 'msgs', 'frames', 'screenshot', 'shot', 'live', 'ox', 'oy', 'ow', 'oh', 'blobs', 'rspChars', 'reqChars', 'hdr']) {
   assert.ok(protocolTs.includes(key), `protocol.ts is missing the "${key}" field`);
 }
 

@@ -15,10 +15,12 @@ export interface NodeDto {
   r: boolean;
   /** is a ComposeView */
   cv: boolean;
-  /** [x, y, w, h] in page-root coordinates */
+  /** [x, y, w, h] in page-root **layout** coordinates (`convertFrame`; ignores scroll/transform) */
   f?: [number, number, number, number];
   /** [x, y] within the dom parent */
   lf?: [number, number];
+  /** ScrollerView contentOffset `[offsetX, offsetY]`. Panel subtracts ancestor `so` from `f` for pick. */
+  so?: [number, number];
   /** attr.copyPropsMap() */
   p?: Record<string, unknown>;
   /** a state dumper is installed */
@@ -93,7 +95,7 @@ export interface ScreenshotDto {
   /** `data:image/png;base64,...` when the capture succeeded */
   data?: string;
   err?: string;
-  /** Page-root origin and size of the captured view; same units as NodeDto.f */
+  /** Page-root origin and size of the captured view in visible coordinates */
   ox?: number;
   oy?: number;
   ow?: number;

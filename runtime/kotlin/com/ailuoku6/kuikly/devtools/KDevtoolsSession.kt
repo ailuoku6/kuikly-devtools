@@ -558,25 +558,11 @@ internal class KDevtoolsSession(
     }
 
     private fun putCapturedFrame(target: JSONObject, view: DeclarativeBaseView<*, *>) {
-        val local = try {
-            view.frame
-        } catch (t: Throwable) {
-            null
-        } ?: return
-        val absolute = try {
-            view.convertFrame(local, null)
-        } catch (t: Throwable) {
-            null
-        }
-        target.put("ox", roundFrame(absolute?.x ?: local.x))
-        target.put("oy", roundFrame(absolute?.y ?: local.y))
-        target.put("ow", roundFrame(local.width))
-        target.put("oh", roundFrame(local.height))
-    }
-
-    private fun roundFrame(value: Float): Double {
-        val scaled = (value * 100f).toInt()
-        return scaled / 100.0
+        val visual = pageVisualFrame(view) ?: return
+        target.put("ox", roundFrame(visual.x))
+        target.put("oy", roundFrame(visual.y))
+        target.put("ow", roundFrame(visual.width))
+        target.put("oh", roundFrame(visual.height))
     }
 
     private fun flushQueuedShot() {

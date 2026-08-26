@@ -123,7 +123,8 @@ Three of the four data sources need no instrumentation at all:
 
 - **Tree, props and layout** come from public API: `ViewContainer.templateChildren()`,
   `Props.copyPropsMap()`, `AbstractBaseView.frame` and `convertFrame(frame, null)` for page-absolute
-  coordinates. `nativeRef` is the node id.
+  layout coordinates, plus `ScrollerView.curOffsetX/Y` so the panel can reconstruct what the
+  screenshot actually shows. `nativeRef` is the node id.
 - **Logs and network** come from `BridgeManager`'s built-in `IBridgeCallObserver`, which sees every
   Kotlin↔Native call: `KRLogModule` for logs, `KRNetworkModule.httpRequest` and TDF `network.fetch`
   (including `HttpService` / `httpGet` / `httpPost`, which wrap it as `KuiklyTDFModule.asyncCall`),
@@ -200,7 +201,7 @@ no tree change and no pending screenshot does not POST just because a log line a
 page sends nothing. Member variables are dumped only for nodes
 the panel has open. While Elements is open, live page screenshots (`Pager.toImage`) run only when
 the tree changed, at most every 2 s, and pause if the browser tab or the preview is hidden. Clicking
-the image hit-tests `NodeDto.f`.
+the image hit-tests visual boxes (layout `f` minus ancestor Scroller `so`, plus `transform`).
 
 The server keeps 20 000 logs and 2 000 network records per page for the page's whole lifetime. The
 device only buffers what has not yet been delivered (2 000 logs / 500 requests).
@@ -237,7 +238,7 @@ To exclude a file from instrumentation, put `kuikly-devtools:ignore` in a commen
   ticks are not captured.
 - Screenshots need Kuikly 2.17+ (`DeclarativeBaseView.toImage`). Virtual nodes (`renderView == null`)
   cannot be captured; use Live / **Capture page** for a full-page shot. Click-to-select maps the
-  image onto `NodeDto.f` using `ox/oy/ow/oh`. Live skips unchanged trees, backs off if `toImage` is
+  image onto visual boxes (`f` minus ancestor scroller `so`, plus `transform`) using `ox/oy/ow/oh`. Live skips unchanged trees, backs off if `toImage` is
   slow, and never queues overlapping captures.
 - The instrumented sources are a copy. Breakpoints and navigation still work against the original
   file since line numbers match, but editing the copy has no effect.
