@@ -48,4 +48,17 @@ assert.strictEqual(slim.rsp, undefined);
 assert.strictEqual(slim.rspChars, 1_000_000);
 assert.strictEqual(store.network.get('m1').rsp, mega, 'slimForDelta must not mutate the archive');
 
+const nativeStore = { network: new Map(), native: new Map(), nativeOrder: [], bodyBuf: new Map() };
+const argsText = 'A'.repeat(200000);
+nativeStore.native.set('n1', { id: 'n1', argsChars: argsText.length });
+applyBlobs(nativeStore, chunksOf('n1', 'args', argsText, 80_000));
+assert.strictEqual(nativeStore.native.get('n1').args, argsText);
+const slimNative = slimForDelta(nativeStore.native.get('n1'));
+assert.strictEqual(slimNative.args, undefined);
+assert.strictEqual(slimNative.argsChars, 200000);
+
+const orphanArgs = { network: new Map(), native: new Map(), nativeOrder: [], bodyBuf: new Map() };
+applyBlobs(orphanArgs, chunksOf('dropped', 'args', 'A'.repeat(1000), 400));
+assert.strictEqual(orphanArgs.native.size, 0, 'arg chunks must not create a native row that ingest already dropped');
+
 process.stdout.write('blobs: ok\n');

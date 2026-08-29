@@ -10,7 +10,7 @@ import com.tencent.kuikly.core.nvi.serialization.json.JSONObject
 /**
  * Taps `BridgeManager`'s observer hook, which sees every Kotlin<->Native call.
  *
- * This is why logs and network traffic need no instrumentation at all:
+ * This is why logs, network traffic and native module calls need no instrumentation at all:
  *  - `KLog` (and therefore `TMLog`) reaches native as `callModuleMethod("KRLogModule", ...)`
  *  - `HttpClient.ajax` reaches native as `callModuleMethod("KRNetworkModule", "httpRequest", ...)`
  *  - `HttpService` / `httpGet` / `httpPost` go through `KuiklyTDFModule.asyncCall("network", "fetch")`
@@ -20,7 +20,12 @@ import com.tencent.kuikly.core.nvi.serialization.json.JSONObject
  *  - MapSSO long-link is `KuiklyTDFModule.syncCall/asyncCall("TMLongLinkModule", subscribe|observe|…)`
  *    with push data arriving as pager events (`UPDATE_INSTANCE`)
  *  - QMLink / MQTT go through `TMKuiklyLongLinkModule` / `TMKuiklyMQTTModule`
- *  - every response comes back as `callKotlinMethod(FIRE_CALLBACK, pagerId, callbackId, data)`
+ *  - remaining `CALL_MODULE_METHOD` / `CALL_TDF_MODULE_METHOD` (unwrapped `KuiklyTDFModule.asyncCall`)
+ *    feed the Native Calls panel; log / HTTP / long-link / vsync modules are excluded
+ *    (they already have Console and Network tabs, including cookie/cancel/status helpers)
+ *  - sync `toNative` returns are filled by tapping `NativeBridge.toNative` (every module, including
+ *    klib-internal CalendarModule.get)
+ *  - every async response comes back as `callKotlinMethod(FIRE_CALLBACK, pagerId, callbackId, data)`
  *
  * Caveat: `BridgeManager.addCallObserver` stores a single observer per pagerId, so installing this
  * tap replaces any other observer for the same page.
@@ -50,18 +55,35 @@ internal class KDevtoolsBridgeTap(private val session: KDevtoolsSession) : IBrid
     private fun onModuleCall(args: Array<out Any?>) {
         val moduleName = args.getOrNull(1) as? String ?: return
         val method = args.getOrNull(2) as? String ?: return
+        val payload = args.getOrNull(3)
+        val callbackId = args.getOrNull(4) as? String
+        val sync = isSyncCall(args)
         when (moduleName) {
-            MODULE_LOG -> onLogCall(method, args.getOrNull(3))
+            MODULE_LOG -> onLogCall(method, payload)
             MODULE_NETWORK -> if (method == "httpRequest") {
-                onKrNetworkRequest(args.getOrNull(3), args.getOrNull(4) as? String)
+                onKrNetworkRequest(payload, callbackId)
             }
-            MODULE_QMLINK -> onQmLinkCall(method, args.getOrNull(3), args.getOrNull(4) as? String)
-            MODULE_MQTT -> onMqttCall(method, args.getOrNull(3), args.getOrNull(4) as? String)
-            MODULE_TDF_WRAPPER -> onTdfWrapperModule(method, args.getOrNull(3), args.getOrNull(4) as? String)
+            MODULE_QMLINK -> onQmLinkCall(method, payload, callbackId)
+            MODULE_MQTT -> onMqttCall(method, payload, callbackId)
+            MODULE_TDF_WRAPPER -> onTdfWrapperModule(method, payload, callbackId, sync)
+            MODULE_HIPPY_BRIDGE -> onHippyBridgeModule(method, payload, callbackId, sync)
             MODULE_JCE_NETWORK -> if (method == "asyncCallWithBinary" || method == "syncCallWithBinary") {
-                val inner = unwrapThreeArgCall(args.getOrNull(3)) ?: return
-                dispatchTdfInner(inner.module, inner.method, inner.params, args.getOrNull(4) as? String, null)
+                val inner = unwrapThreeArgCall(payload)
+                if (inner == null) {
+                    onNativeModule(
+                        moduleName, method, payload, callbackId, null, sync,
+                        "$moduleName.$method"
+                    )
+                    return
+                }
+                dispatchTdfInner(
+                    inner.module, inner.method, inner.params, callbackId, null,
+                    "$moduleName.$method", method.startsWith("sync")
+                )
+            } else {
+                onNativeModule(moduleName, method, payload, callbackId, null, sync, VIA_MODULE)
             }
+            else -> onNativeModule(moduleName, method, payload, callbackId, null, sync, VIA_MODULE)
         }
     }
 
@@ -119,18 +141,30 @@ internal class KDevtoolsBridgeTap(private val session: KDevtoolsSession) : IBrid
         val method = args.getOrNull(2) as? String ?: return
         val payload = args.getOrNull(3)
         val callbacks = args.getOrNull(4) as? String
+        val successId = firstCallbackId(callbacks)
+        val errorId = errorCallbackId(callbacks)
+        val sync = isSyncCall(args)
         if (moduleName == TDF_MODULE_NETWORK && method == "fetch") {
-            onTdfFetchParams(parseObject(payload as? String), firstCallbackId(callbacks), errorCallbackId(callbacks))
+            onTdfFetchParams(parseObject(payload as? String), successId, errorId)
             return
         }
         if (moduleName == MODULE_TDF_WRAPPER && (method == "syncCall" || method == "asyncCall")) {
-            val inner = unwrapThreeArgCall(payload) ?: return
-            dispatchTdfInner(inner.module, inner.method, inner.params, firstCallbackId(callbacks), errorCallbackId(callbacks))
+            val inner = unwrapThreeArgCall(payload)
+            if (inner == null) {
+                onNativeModule(moduleName, method, payload, successId, errorId, sync, "KuiklyTDFModule.$method")
+                return
+            }
+            dispatchTdfInner(
+                inner.module, inner.method, inner.params, successId, errorId,
+                "KuiklyTDFModule.$method", method == "syncCall" || sync
+            )
             return
         }
         if (moduleName == TDF_MODULE_LONGLINK) {
-            onLongLinkMethod(moduleName, method, parseObject(payload as? String), firstCallbackId(callbacks), errorCallbackId(callbacks))
+            onLongLinkMethod(moduleName, method, parseObject(payload as? String), successId, errorId)
+            return
         }
+        onNativeModule(moduleName, method, payload, successId, errorId, sync, VIA_TDF)
     }
 
     /**
@@ -145,7 +179,9 @@ internal class KDevtoolsBridgeTap(private val session: KDevtoolsSession) : IBrid
         method: String,
         params: JSONObject?,
         successId: String?,
-        errorId: String?
+        errorId: String?,
+        via: String = "KuiklyTDFModule",
+        sync: Boolean = false
     ) {
         when {
             moduleName == TDF_MODULE_NETWORK && method == "fetch" ->
@@ -156,13 +192,69 @@ internal class KDevtoolsBridgeTap(private val session: KDevtoolsSession) : IBrid
                 onLongLinkMethod(moduleName, method, params, successId, errorId)
             moduleName == MODULE_MQTT ->
                 onMqttCall(method, params?.toString(), successId)
+            else -> onNativeModule(moduleName, method, params, successId, errorId, sync, via)
         }
     }
 
-    private fun onTdfWrapperModule(method: String, payload: Any?, callbackId: String?) {
-        if (method != "syncCall" && method != "asyncCall") return
-        val inner = unwrapThreeArgCall(payload) ?: return
-        dispatchTdfInner(inner.module, inner.method, inner.params, callbackId, null)
+    private fun onTdfWrapperModule(method: String, payload: Any?, callbackId: String?, sync: Boolean) {
+        if (method != "syncCall" && method != "asyncCall") {
+            onNativeModule(MODULE_TDF_WRAPPER, method, payload, callbackId, null, sync, VIA_MODULE)
+            return
+        }
+        val inner = unwrapThreeArgCall(payload)
+        if (inner == null) {
+            onNativeModule(
+                MODULE_TDF_WRAPPER, method, payload, callbackId, null,
+                method == "syncCall" || sync, "KuiklyTDFModule.$method"
+            )
+            return
+        }
+        dispatchTdfInner(
+            inner.module, inner.method, inner.params, callbackId, null,
+            "KuiklyTDFModule.$method", method == "syncCall" || sync
+        )
+    }
+
+    private fun onHippyBridgeModule(method: String, payload: Any?, callbackId: String?, sync: Boolean) {
+        val inner = unwrapThreeArgCall(payload)
+        val via = "$MODULE_HIPPY_BRIDGE.$method"
+        if (inner == null) {
+            onNativeModule(MODULE_HIPPY_BRIDGE, method, payload, callbackId, null, sync, via)
+            return
+        }
+        dispatchTdfInner(inner.module, inner.method, inner.params, callbackId, null, via, sync)
+    }
+
+    private fun onNativeModule(
+        moduleName: String,
+        method: String,
+        params: Any?,
+        successId: String?,
+        errorId: String?,
+        sync: Boolean,
+        via: String
+    ) {
+        if (isLogOrNetworkNativeModule(moduleName)) return
+        if (KDevtools.isEmittingOwnUpload) return
+        val id = successId?.takeIf { it.isNotEmpty() }
+            ?: errorId?.takeIf { it.isNotEmpty() }
+            ?: session.nextNativeId()
+        val record = NativeCallRecord(
+            id = id,
+            moduleName = moduleName,
+            methodName = method,
+            via = via,
+            sync = sync,
+            args = stringifyArg(params),
+            startedAt = DateTime.currentTimestamp()
+        )
+        session.onNativeStart(record, errorId)
+        if (sync) {
+            KDevtoolsNativeReturn.pushSync(record)
+        }
+        if (successId.isNullOrEmpty() && errorId.isNullOrEmpty()) {
+            record.complete(true, "", "", DateTime.currentTimestamp())
+        }
     }
 
     private fun onTdfFetchParams(params: JSONObject?, successId: String?, errorId: String?) {
@@ -359,8 +451,13 @@ internal class KDevtoolsBridgeTap(private val session: KDevtoolsSession) : IBrid
 
     private fun onFireCallback(args: Array<out Any?>) {
         val callbackId = args.getOrNull(1) as? String ?: return
-        val record = session.pendingNetwork(callbackId) ?: return
         val data = args.getOrNull(2)
+        val native = session.pendingNative(callbackId)
+        if (native != null && session.pendingNetwork(callbackId) == null) {
+            onNativeCallback(native, callbackId, data)
+            return
+        }
+        val record = session.pendingNetwork(callbackId) ?: return
         val json = when (data) {
             is JSONObject -> data
             is String -> parseObject(data)
@@ -446,7 +543,18 @@ internal class KDevtoolsBridgeTap(private val session: KDevtoolsSession) : IBrid
                     return null
                 }
             }
-            else -> return null
+            else -> {
+                val text = raw.toString().trim()
+                if (!text.startsWith("[")) return null
+                val array = try {
+                    JSONArray(text)
+                } catch (t: Throwable) {
+                    return null
+                }
+                module = array.optString(0).orEmpty()
+                method = array.optString(1).orEmpty()
+                third = array.opt(2)
+            }
         }
         if (module.isEmpty() || method.isEmpty()) return null
         return TdfInner(module, method, coerceParams(third))
@@ -470,7 +578,7 @@ internal class KDevtoolsBridgeTap(private val session: KDevtoolsSession) : IBrid
 
     /**
      * Hippy/TDF fetch callbacks look like `{ statusCode, respBody }`. After JSON.parse the same
-     * shape may sit under `result`. A bus-line HTTP body is itself JSON and almost always has a
+     * shape may sit under `result`. A structured HTTP body is itself JSON and almost always has a
      * nested `data` field — that is the API payload, not the HTTP envelope. Picking `data` there
      * drops craftData / sibling fields and is why a large response looked truncated.
      */
@@ -563,6 +671,86 @@ internal class KDevtoolsBridgeTap(private val session: KDevtoolsSession) : IBrid
         }
     }
 
+    private fun onNativeCallback(record: NativeCallRecord, callbackId: String, data: Any?) {
+        val viaError = session.isErrorCallback(callbackId)
+        val json = when (data) {
+            is JSONObject -> data
+            is String -> parseObject(data)
+            else -> null
+        }
+        val name = json?.optString("name").orEmpty()
+        val ok: Boolean
+        val body: String
+        when {
+            name == "errorCallback" -> {
+                ok = false
+                body = jsonValueToText(json?.opt("param") ?: json?.opt("data") ?: data)
+            }
+            name == "successCallback" -> {
+                ok = !viaError
+                body = jsonValueToText(json?.opt("param") ?: json?.opt("data") ?: data)
+            }
+            json != null && json.has("result") -> {
+                ok = !viaError
+                body = jsonValueToText(json.opt("result"))
+            }
+            else -> {
+                ok = !viaError
+                body = jsonValueToText(json ?: data)
+            }
+        }
+        val errorText = if (ok) "" else body
+        record.complete(ok, errorText, body, DateTime.currentTimestamp())
+    }
+
+    private fun stringifyArg(value: Any?): String = when (value) {
+        null -> ""
+        is String -> value
+        is JSONObject -> value.toString()
+        is JSONArray -> value.toString()
+        is ByteArray -> {
+            val text = try {
+                value.decodeToString()
+            } catch (t: Throwable) {
+                ""
+            }
+            if (text.isNotEmpty() && (text.first() == '{' || text.first() == '[')) text
+            else "<byte[${value.size}]>"
+        }
+        else -> value.toString()
+    }
+
+    private fun isSyncCall(args: Array<out Any?>): Boolean {
+        val raw = args.getOrNull(5) ?: return false
+        val flag = when (raw) {
+            is Int -> raw
+            is Number -> raw.toInt()
+            is String -> raw.toIntOrNull() ?: 0
+            else -> 0
+        }
+        return (flag and 1) != 0
+    }
+
+    /**
+     * Console already owns `KRLogModule`; Network already owns HTTP / long-link / MQTT.
+     * Helpers on those same modules (`network.getCookie`, `TMNetworkModule.cancel`, …) must not
+     * reappear in the Native Calls panel. Name heuristics catch Harmony `KRLogModuleArkTS` and
+     * similarly named wrappers without listing every spelling.
+     */
+    private fun isLogOrNetworkNativeModule(name: String): Boolean {
+        when (name) {
+            MODULE_LOG, MODULE_NETWORK, MODULE_VSYNC,
+            TDF_MODULE_NETWORK, TDF_MODULE_MAP_NETWORK,
+            TDF_MODULE_LONGLINK, MODULE_QMLINK, MODULE_MQTT,
+            MODULE_JCE_NETWORK -> return true
+        }
+        val lower = name.lowercase()
+        return lower.contains("logmodule") ||
+            lower.contains("networkmodule") ||
+            lower.contains("longlink") ||
+            lower.contains("mqtt")
+    }
+
     private fun firstCallbackId(callbacks: String?): String? {
         val parsed = parseObject(callbacks) ?: return null
         return parsed.optString("succ").ifEmpty { null }
@@ -610,9 +798,13 @@ internal class KDevtoolsBridgeTap(private val session: KDevtoolsSession) : IBrid
         const val MODULE_LOG = "KRLogModule"
         const val MODULE_NETWORK = "KRNetworkModule"
         const val MODULE_TDF_WRAPPER = "KuiklyTDFModule"
+        const val MODULE_HIPPY_BRIDGE = "TMKuiklyBridgeModule"
+        const val MODULE_VSYNC = "KRVsyncModule"
         const val MODULE_QMLINK = "TMKuiklyLongLinkModule"
         const val MODULE_MQTT = "TMKuiklyMQTTModule"
         const val MODULE_JCE_NETWORK = "TMKuiklyJCENetworkModule"
+        const val VIA_MODULE = "callModuleMethod"
+        const val VIA_TDF = "callTDFModuleMethod"
         const val TDF_MODULE_NETWORK = "network"
         const val TDF_MODULE_MAP_NETWORK = "TMNetworkModule"
         const val TDF_MODULE_LONGLINK = "TMLongLinkModule"

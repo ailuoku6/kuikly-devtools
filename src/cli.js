@@ -148,7 +148,7 @@ async function commandServe(options) {
       lastSummaryKey = key;
       info(
         `${delta.meta.page || delta.pagerId} (${delta.meta.platform || '?'}) ` +
-          `nodes=${delta.meta.nodeCount} logs=${delta.meta.logCount} net=${delta.meta.networkCount}`
+          `nodes=${delta.meta.nodeCount} logs=${delta.meta.logCount} net=${delta.meta.networkCount} native=${delta.meta.nativeCount || 0}`
       );
     });
   }
@@ -395,10 +395,15 @@ function inspectEndpoint(options, subject) {
     case 'sessions': endpoint = '/api/inspect/sessions'; break;
     case 'logs': endpoint = '/api/inspect/logs'; break;
     case 'network': endpoint = '/api/inspect/network'; break;
+    case 'native': endpoint = '/api/inspect/native'; break;
     case 'nodes': endpoint = '/api/inspect/nodes'; break;
     case 'network-detail':
       if (!options.id) throw new Error('usage: inspect network-detail --pager <id> --id <request-id>');
       endpoint = `/api/inspect/network/${encodeURIComponent(options.id)}`;
+      break;
+    case 'native-detail':
+      if (!options.id) throw new Error('usage: inspect native-detail --pager <id> --id <call-id>');
+      endpoint = `/api/inspect/native/${encodeURIComponent(options.id)}`;
       break;
     case 'log-detail':
       if (!options.id) throw new Error('usage: inspect log-detail --pager <id> --id <log-seq>');
@@ -442,7 +447,7 @@ async function commandInspect(options) {
     return 0;
   }
   if (!subject) {
-    fail('usage: kuikly-devtools inspect <sessions|logs|network|nodes|log-detail|network-detail|node-detail> [options]');
+    fail('usage: kuikly-devtools inspect <sessions|logs|network|native|nodes|log-detail|network-detail|native-detail|node-detail> [options]');
     process.exitCode = 1;
     return 1;
   }
@@ -535,7 +540,7 @@ Commands
   build-js     Start or reuse DevTools, then build the instrumented JS debug artifact
   build-apk    Build the instrumented hot-reload debug APK (Android) and start DevTools
   gradle       Start or reuse DevTools, then run arbitrary instrumented Gradle tasks
-  inspect      Search live page sessions, logs, network records, and nodes for AI-assisted debugging
+  inspect      Search live page sessions, logs, network, native calls, and nodes for AI-assisted debugging
   init-skill   Install the page-inspection Skill for Codex, Claude Code, and Cursor in this project
   doctor       Print resolved paths, ports and network addresses
   help         Show this message
@@ -563,6 +568,7 @@ Examples
   npx kuikly-devtools gradle -- :app:assembleDebug
   npx kuikly-devtools inspect logs --pager 7 --query timeout
   npx kuikly-devtools inspect network-detail --pager 7 --id cb_42
+  npx kuikly-devtools inspect native --pager 7 --query CalendarModule
   npx kuikly-devtools init-skill --project .
 `);
   return 0;

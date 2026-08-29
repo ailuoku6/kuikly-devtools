@@ -4,6 +4,7 @@ import type {
   DeviceInfo,
   FullSessionState,
   LogDto,
+  NativeCallDto,
   NetworkDto,
   NodeDto,
   ScreenshotDto,
@@ -11,12 +12,13 @@ import type {
   SessionSummary,
 } from './protocol';
 import { applyBlobs } from './blobs';
-import { LIVE_SHOT_INTERVAL_MS } from './protocol';
+import { isLogOrNetworkNative, LIVE_SHOT_INTERVAL_MS } from './protocol';
 
 // Keep enough client-side history for the large-log virtual-list mock; the server still owns
 // the production archive limit, while the panel can render a deliberately oversized snapshot.
 const MAX_LOGS = 50000;
 const MAX_NETWORK = 2000;
+const MAX_NATIVE = 2000;
 const MAX_FRAMES = 500;
 
 export type ConnectionState = 'connecting' | 'open' | 'closed';
@@ -25,15 +27,19 @@ export type ConnectionState = 'connecting' | 'open' | 'closed';
  * Same rule as the server: a blank field in a later payload must not erase what an earlier one
  * already told us, so a completion notice cannot turn a row anonymous.
  */
-function mergeRecord(existing: NetworkDto, update: Partial<NetworkDto>): NetworkDto {
-  const merged: NetworkDto = { ...existing };
+function mergeRecord<T extends { msgs?: NetworkDto['msgs']; frames?: number; ok?: boolean }>(
+  existing: T,
+  update: Partial<T>
+): T {
+  const merged: T = { ...existing };
   const writable = merged as unknown as Record<string, unknown>;
-  for (const key of Object.keys(update) as Array<keyof NetworkDto>) {
+  for (const key of Object.keys(update) as Array<keyof T>) {
     if (key === 'msgs') continue;
     const value = update[key];
     if (value === undefined || value === null || value === '') continue;
-    writable[key] = value;
+    writable[key as string] = value;
   }
+  if (typeof update.ok === 'boolean') merged.ok = update.ok;
   if (update.msgs?.length) {
     const seen = new Set((merged.msgs ?? []).map((frame) => frame.seq));
     const extra = update.msgs.filter((frame) => typeof frame.seq === 'number' && !seen.has(frame.seq));
@@ -55,6 +61,8 @@ export interface SessionView {
   logs: LogDto[];
   network: NetworkDto[];
   networkIndex: Map<string, number>;
+  native: NativeCallDto[];
+  nativeIndex: Map<string, number>;
   screenshot: ScreenshotDto | null;
   hydrated: boolean;
   bodyBuf: Map<string, unknown>;
@@ -194,7 +202,7 @@ export class DevtoolsStore {
   }
 
   /**
-   * Hides logs/network in this tab only. The server keeps the archive until the Kuikly page is
+   * Hides logs/network/native in this tab only. The server keeps the archive until the Kuikly page is
    * destroyed, so reopening the panel still shows the full history.
    */
   clearActiveBuffers(): void {
@@ -205,6 +213,8 @@ export class DevtoolsStore {
       session.logs = [];
       session.network = [];
       session.networkIndex = new Map();
+      session.native = [];
+      session.nativeIndex = new Map();
       session.bodyBuf = new Map();
     }
     this.notify();
@@ -249,6 +259,8 @@ export class DevtoolsStore {
           session.logs = [];
           session.network = [];
           session.networkIndex = new Map();
+          session.native = [];
+          session.nativeIndex = new Map();
           session.bodyBuf = new Map();
         }
         break;
@@ -269,6 +281,8 @@ export class DevtoolsStore {
         existing.logs = [];
         existing.network = [];
         existing.networkIndex = new Map();
+        existing.native = [];
+        existing.nativeIndex = new Map();
         existing.bodyBuf = new Map();
         existing.nodes = new Map();
         existing.device = null;
@@ -285,6 +299,8 @@ export class DevtoolsStore {
       logs: [],
       network: [],
       networkIndex: new Map(),
+      native: [],
+      nativeIndex: new Map(),
       screenshot: null,
       hydrated: false,
       bodyBuf: new Map(),
@@ -306,7 +322,7 @@ export class DevtoolsStore {
     session.device = state.device;
     session.nodes = new Map(state.nodes.map((node) => [node.id, node]));
     // Union, never replace: a delta that arrived before this snapshot must not be thrown away.
-    this.appendArchive(session, state.logs, state.network);
+    this.appendArchive(session, state.logs, state.network, state.native);
     if (state.screenshot !== undefined) session.screenshot = state.screenshot;
     session.hydrated = true;
   }
@@ -320,6 +336,7 @@ export class DevtoolsStore {
     removed: number[];
     logs: LogDto[];
     network: NetworkDto[];
+    native?: NativeCallDto[];
     screenshot?: ScreenshotDto;
     blobs?: BodyBlobDto[];
   }): void {
@@ -332,7 +349,7 @@ export class DevtoolsStore {
 
     // Logs/network are an append-only archive and must be kept even before the tree is hydrated,
     // otherwise a late-opening panel would drop everything that arrived between hello and snapshot.
-    this.appendArchive(session, delta.logs, delta.network, delta.blobs);
+    this.appendArchive(session, delta.logs, delta.network, delta.native, delta.blobs);
     if (delta.screenshot) session.screenshot = delta.screenshot;
 
     // A delta for a session we never hydrated would give a tree with dangling parents; ask for the
@@ -354,6 +371,7 @@ export class DevtoolsStore {
     session: SessionView,
     logs: LogDto[] | undefined,
     network: NetworkDto[] | undefined,
+    native?: NativeCallDto[],
     blobs?: BodyBlobDto[]
   ): void {
     if (logs?.length) {
@@ -383,18 +401,51 @@ export class DevtoolsStore {
       }
     }
 
+    for (const record of native ?? []) {
+      if (!record) continue;
+      if (isLogOrNetworkNative(record.mod)) continue;
+      const index = session.nativeIndex.get(record.id);
+      if (index === undefined) {
+        if (!record.mod) continue;
+        session.nativeIndex.set(record.id, session.native.length);
+        session.native = session.native.concat(record);
+        if (session.native.length > MAX_NATIVE) {
+          session.native = session.native.slice(-MAX_NATIVE);
+          session.nativeIndex = new Map(session.native.map((item, i) => [item.id, i]));
+        }
+      } else {
+        session.native = session.native.slice();
+        session.native[index] = mergeRecord(session.native[index], record);
+      }
+    }
+
     if (blobs?.length) {
-      const map = new Map<string, NetworkDto>();
-      for (const item of session.network) map.set(item.id, item);
-      applyBlobs({ network: map, networkOrder: [], bodyBuf: session.bodyBuf }, blobs);
+      const networkMap = new Map<string, NetworkDto>();
+      for (const item of session.network) networkMap.set(item.id, item);
+      const nativeMap = new Map<string, NativeCallDto>();
+      for (const item of session.native) nativeMap.set(item.id, item);
+      applyBlobs(
+        { network: networkMap, native: nativeMap, networkOrder: [], nativeOrder: [], bodyBuf: session.bodyBuf },
+        blobs
+      );
       session.network = session.network.slice();
-      for (const rec of map.values()) {
+      for (const rec of networkMap.values()) {
         const index = session.networkIndex.get(rec.id);
         if (index === undefined) {
           session.networkIndex.set(rec.id, session.network.length);
           session.network = session.network.concat(rec);
         } else {
           session.network[index] = rec;
+        }
+      }
+      session.native = session.native.slice();
+      for (const rec of nativeMap.values()) {
+        const index = session.nativeIndex.get(rec.id);
+        if (index === undefined) {
+          session.nativeIndex.set(rec.id, session.native.length);
+          session.native = session.native.concat(rec);
+        } else {
+          session.native[index] = rec;
         }
       }
     }

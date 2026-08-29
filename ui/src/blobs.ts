@@ -1,4 +1,4 @@
-import type { BodyBlobDto, NetworkDto, NetworkFrameDto } from './protocol';
+import type { BodyBlobDto, NativeCallDto, NetworkDto, NetworkFrameDto } from './protocol';
 
 interface BodyBuf {
   count: number;
@@ -14,7 +14,9 @@ interface BodyBuf {
 
 export interface BlobSession {
   network: Map<string, NetworkDto>;
+  native?: Map<string, NativeCallDto>;
   networkOrder?: string[];
+  nativeOrder?: string[];
   bodyBuf: Map<string, unknown>;
 }
 
@@ -53,7 +55,7 @@ export function applyBlobs(session: BlobSession, blobs?: BodyBlobDto[]): void {
       buf.got += 1;
       buf.chars += blob.data.length;
     }
-    const rec = session.network.get(id);
+    const rec = lookupRecord(session, id, blob.field);
     if (rec) stampProgress(rec, buf);
     if (buf.got === buf.count) {
       attachAssembled(session, buf, buf.parts.join(''));
@@ -62,22 +64,54 @@ export function applyBlobs(session: BlobSession, blobs?: BodyBlobDto[]): void {
   }
 }
 
-function stampProgress(rec: NetworkDto, buf: BodyBuf) {
-  if (buf.field === 'req') rec.reqGot = buf.chars;
+function lookupRecord(
+  session: BlobSession,
+  id: string,
+  field: string
+): NetworkDto | NativeCallDto | undefined {
+  if (session.native && (field === 'args' || session.native.has(id))) {
+    return session.native.get(id);
+  }
+  return session.network.get(id);
+}
+
+function stampProgress(rec: NetworkDto | NativeCallDto, buf: BodyBuf) {
+  if (buf.field === 'req' && 'reqGot' in rec) rec.reqGot = buf.chars;
+  else if (buf.field === 'args' && 'argsGot' in rec) rec.argsGot = buf.chars;
   else if (buf.field === 'rsp') rec.rspGot = buf.chars;
 }
 
 function attachAssembled(session: BlobSession, buf: BodyBuf, text: string) {
+  const useNative = buf.field === 'args' || (session.native && session.native.has(buf.id));
+  if (useNative) {
+    if (!session.native) session.native = new Map();
+    let rec = session.native.get(buf.id);
+    if (!rec) {
+      rec = { id: buf.id, mod: '', method: '', via: '', ts: 0 };
+      session.native.set(buf.id, rec);
+      session.nativeOrder?.push(buf.id);
+    }
+    attachBody(rec, buf, text);
+    return;
+  }
   let rec = session.network.get(buf.id);
   if (!rec) {
     rec = { id: buf.id, url: '', method: '', stack: '', ts: 0 };
     session.network.set(buf.id, rec);
     session.networkOrder?.push(buf.id);
   }
-  if (buf.field === 'req') {
+  attachBody(rec, buf, text);
+}
+
+function attachBody(rec: NetworkDto | NativeCallDto, buf: BodyBuf, text: string) {
+  if (buf.field === 'req' && 'req' in rec) {
     rec.req = text;
     rec.reqGot = text.length;
     rec.reqChars = text.length;
+  } else if (buf.field === 'args' && 'args' in rec) {
+    rec.args = text;
+    rec.argsGot = text.length;
+    rec.argsChars = text.length;
   } else if (buf.field === 'rsp') {
     rec.rsp = text;
     rec.rspGot = text.length;

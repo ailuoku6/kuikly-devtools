@@ -3,6 +3,9 @@ package com.ailuoku6.kuikly.devtools
 import com.tencent.kuikly.core.manager.BridgeManager
 import com.tencent.kuikly.core.pager.Pager
 
+@Suppress("unused")
+private val kdtEagerNativeReturnTap: Unit = runCatching { installNativeReturnTap() }.getOrDefault(Unit)
+
 /**
  * Entry point of the Kuikly DevTools agent.
  *
@@ -12,6 +15,11 @@ import com.tencent.kuikly.core.pager.Pager
 object KDevtools {
 
     internal const val TAG = "KuiklyDevtools"
+
+    init {
+        // JS: wrap NativeBridge.prototype.toNative (retries if the first eager wrap was too early).
+        runCatching { installNativeReturnTap() }
+    }
 
     private val sessions = LinkedHashMap<String, KDevtoolsSession>()
 

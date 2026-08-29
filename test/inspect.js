@@ -72,6 +72,11 @@ async function run() {
         id: 'request-1', url: 'https://example.test/suggestions', method: 'GET', stack: 'KRNetworkModule',
         ts: Date.now(), status: 500, ok: false, rsp: JSON.stringify({ payload: 'x'.repeat(18 * 1024) }),
       }],
+      native: [{
+        id: 'nc-1', mod: 'CalendarModule', method: 'getReminderList', via: 'KuiklyTDFModule.asyncCall',
+        sync: false, args: JSON.stringify({ busId: 'line-9' }), ts: Date.now(), ok: true, cost: 18,
+        rsp: '{"code":0,"data":{"count":2}}',
+      }],
     });
 
     const logs = await inspect(['logs', '--pager', 'inspect-1', '--query', 'timeout'], project);
@@ -83,6 +88,17 @@ async function run() {
     const nodes = await inspect(['nodes', '--pager', 'inspect-1', '--query', 'SearchBar'], project);
     assert.strictEqual(nodes.status, 0, nodes.stderr);
     assert.strictEqual(JSON.parse(nodes.stdout).nodes[0].id, 7);
+
+    const native = await inspect(['native', '--pager', 'inspect-1', '--query', 'CalendarModule'], project);
+    assert.strictEqual(native.status, 0, native.stderr);
+    const nativeResult = JSON.parse(native.stdout);
+    assert.strictEqual(nativeResult.total, 1);
+    assert.strictEqual(nativeResult.native[0].mod, 'CalendarModule');
+    assert.ok(nativeResult.native[0].argsPreview);
+
+    const nativeDetail = await inspect(['native-detail', '--pager', 'inspect-1', '--id', 'nc-1'], project);
+    assert.strictEqual(nativeDetail.status, 0, nativeDetail.stderr);
+    assert.strictEqual(JSON.parse(nativeDetail.stdout).native.method, 'getReminderList');
 
     const nodeProps = await inspect(['nodes', '--pager', 'inspect-1', '--query', 'suggestions-42'], project);
     assert.strictEqual(nodeProps.status, 0, nodeProps.stderr);

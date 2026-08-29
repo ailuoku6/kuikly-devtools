@@ -64,7 +64,8 @@ fun main(args: Array<String>) {
     println(
         "[kuikly-devtools] instrumented $changedFiles/${sources.size} files in " +
             "${System.currentTimeMillis() - started}ms: " +
-            "${pages.size} pages, ${stateClasses.size} stateful classes, $printlns println call sites"
+            "${pages.size} pages, ${stateClasses.size} stateful classes, " +
+            "$printlns println call sites"
     )
     if (!quiet && pages.isNotEmpty()) {
         println("[kuikly-devtools] pages: ${pages.joinToString(", ")}")

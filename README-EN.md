@@ -73,9 +73,11 @@ page, then query only what is relevant:
 npx kuikly-devtools inspect sessions
 npx kuikly-devtools inspect logs --pager 7 --query timeout
 npx kuikly-devtools inspect network --pager 7 --query /api/search --status 500
+npx kuikly-devtools inspect native --pager 7 --query CalendarModule
 npx kuikly-devtools inspect nodes --pager 7 --query SearchBar
 npx kuikly-devtools inspect network-detail --pager 7 --id cb_42
 npx kuikly-devtools inspect log-detail --pager 7 --id 42
+npx kuikly-devtools inspect native-detail --pager 7 --id nc_1
 npx kuikly-devtools inspect node-detail --pager 7 --id 42
 ```
 
@@ -91,7 +93,8 @@ for manual removal, and can be cleared with `npx kuikly-devtools inspect clean-t
 - **Elements** — the full declarative tree from `templateChildren()`, so virtual (flattened)
   containers and `ComposeView` boundaries are visible, not just native views. The inspector shows
   a live page screenshot (toImage when the tree changes, at most every 2 s; click the image to
-  select the matching node via `f` frames), props (`attr.copyPropsMap()`), page-absolute and
+  select the matching node via `f` frames), props (`copyPropsMap()` plus FlexNode layout such as
+  margin / padding / width / flex), page-absolute and
   parent-relative layout, and instrumented state.
 - **Components** — only `Pager` and `ComposeView` nodes, for navigating by component instead of by
   view.
@@ -100,8 +103,13 @@ for manual removal, and can be cleared with `npx kuikly-devtools inspect clean-t
   (`TMLongLinkModule` subscribe/observe and pager-event pushes, QMLink, MQTT), with request
   headers, frames listed like Chrome's WebSocket panel, and one-click copy-as-curl for ordinary
   HTTP.
+- **Native calls** — Kotlin → Native module invocations (`Module.toNative` / `toTDFNative`,
+  including `KuiklyTDFModule.asyncCall("CalendarModule", …)` which is unwrapped to
+  `CalendarModule.method`). Arguments, async `FIRE_CALLBACK` results and sync `toNative` return
+  values (via a tap on `NativeBridge.toNative`) are shown. Logs, HTTP,
+  long-link, MQTT and per-frame vsync are not shown here (including cookie/cancel helpers).
 
-The ingest server is the archive: logs and requests are stored as they arrive, so opening the panel
+The ingest server is the archive: logs, requests and native calls are stored as they arrive, so opening the panel
 later still shows traffic from before the browser connected. Panel Clear only hides the current tab;
 the archive is deleted when the Kuikly page itself is destroyed.
 
@@ -119,25 +127,35 @@ bridge ─┘        ▲                              │
                  └────────── commands ──────────┘
 ```
 
-Three of the four data sources need no instrumentation at all:
+Three of the five data sources need no instrumentation at all:
 
 - **Tree, props and layout** come from public API: `ViewContainer.templateChildren()`,
-  `Props.copyPropsMap()`, `AbstractBaseView.frame` and `convertFrame(frame, null)` for page-absolute
+  `Props.copyPropsMap()` plus `FlexNode` layout getters (`getMargin`, `styleWidth`, …),
+  `AbstractBaseView.frame` and `convertFrame(frame, null)` for page-absolute
   layout coordinates, plus `ScrollerView.curOffsetX/Y` so the panel can reconstruct what the
   screenshot actually shows. `nativeRef` is the node id.
-- **Logs and network** come from `BridgeManager`'s built-in `IBridgeCallObserver`, which sees every
+- **Logs, network and native module calls** come from `BridgeManager`'s built-in `IBridgeCallObserver`, which sees every
   Kotlin↔Native call: `KRLogModule` for logs, `KRNetworkModule.httpRequest` and TDF `network.fetch`
   (including `HttpService` / `httpGet` / `httpPost`, which wrap it as `KuiklyTDFModule.asyncCall`),
   `TMNetworkModule.fetchMapServer`, `KuiklyTDFModule` wrapping `TMLongLinkModule` (pushes arrive as pager events), plus
   `TMKuiklyLongLinkModule` / `TMKuiklyMQTTModule`, and `FIRE_CALLBACK` to correlate responses.
+  Remaining `CALL_MODULE_METHOD` / `CALL_TDF_MODULE_METHOD` traffic (unwrapped TDF inner modules,
+  `BridgeModule`, `NotifyModule`, …) feeds the Native Calls panel; log, HTTP, long-link and MQTT
+  modules stay on Console / Network, including helpers such as `network.getCookie`.
+  Sync `toNative` returns are filled by tapping `NativeBridge.toNative` (including klib-internal
+  calls such as `CalendarModule.get`).
 - **Transport** is Kuikly's own `NetworkModule`, the only HTTP client available identically on
   Android, iOS, HarmonyOS and the JS bundle runtime.
 
-Only two things genuinely require compile-time work, and that is all the instrumentor does:
+Compile-time work the instrumentor does:
 
 1. attaching the agent to `@Page` classes without editing business code
 2. reading **private** member variables — there is no `kotlin-reflect` on Native or JS, so the read
    has to be generated inside the owning class body
+3. redirecting top-level `println(x)` (it never reaches the bridge)
+
+Sync `toNative` returns are filled at runtime by tapping `NativeBridge.toNative`, not by rewriting
+app call sites.
 
 ### Instrumentation
 
@@ -170,7 +188,8 @@ init {
 
 Every field gets its own guarded lambda, so an uninitialised `lateinit` or a throwing getter blanks
 out that one entry instead of the whole dump. `println(x)` becomes `KDevtools.printLine(x)`, because
-`println` is the one logging path that never reaches the bridge.
+`println` is the one logging path that never reaches the bridge. Sync native returns are captured by
+tapping `NativeBridge.toNative`, without rewriting app `syncCall` sites.
 
 Because the instrumentor only parses, its embedded Kotlin version is independent of the version your
 project compiles with — the same jar serves a Kotlin 1.7.20 mobile pipeline and a 1.9.23-dev
@@ -195,10 +214,11 @@ traffic.
 ## Cost
 
 The device walks the tree every sampling interval and sends only nodes whose serialised form changed,
-plus removed ids. Logs and network records are buffered on device and flushed every 1.5 s (sooner if
+plus removed ids. Logs, network records and native calls are buffered on device and flushed every 1.5 s (sooner if
 the batch is large, or immediately when a tree/screenshot ingest is already going out). A tick with
 no tree change and no pending screenshot does not POST just because a log line arrived. A fully idle
-page sends nothing. Member variables are dumped only for nodes
+page sends an empty heartbeat at least every 5 seconds (within the 8-second requirement); the server removes the session after 10 seconds
+without any ingest packet, covering an abrupt page exit. Member variables are dumped only for nodes
 the panel has open. While Elements is open, live page screenshots (`Pager.toImage`) run only when
 the tree changed, at most every 2 s, and pause if the browser tab or the preview is hidden. Clicking
 the image hit-tests visual boxes (layout `f` minus ancestor Scroller `so`, plus `transform`),

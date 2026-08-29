@@ -4,23 +4,32 @@
 
 ## 一、数据从哪里来
 
-Kuikly DevTools 的大部分能力来自 Kuikly 已有的公开 API 和 bridge observer，只有自动挂载和读取私有成员变量需要编译期插桩。
+Kuikly DevTools 的大部分能力来自 Kuikly 已有的公开 API 和 bridge observer。自动挂载、读取私有成员变量和重定向 `println` 需要编译期插桩；同步 Native 返回值在运行时拦截 `NativeBridge.toNative`。
 
 | 能力 | 来源 | 是否需要插桩 |
 | --- | --- | --- |
 | 节点树 | `ViewContainer.templateChildren()` | 否 |
 | 节点 id | `AbstractBaseView.nativeRef` | 否 |
-| 属性 | `Props.copyPropsMap()` | 否 |
+| 属性 | `Props.copyPropsMap()` + `FlexNode` 布局样式（`margin` / `padding` / `width` / `flex` 等） | 否 |
 | 页面绝对坐标 | `AbstractBaseView.frame` + `convertFrame(frame, null)` | 否 |
 | Scroller 偏移 | `ScrollerView.curOffsetX/Y`（节点字段 `so`） | 否 |
 | 日志 | `BridgeManager` 的 `IBridgeCallObserver` → `KRLogModule` | 否 |
 | 网络请求 | bridge observer → HTTP、TDF `network.fetch`、长连接模块 | 否 |
+| 原生模块调用（入参 / 异步回调） | bridge observer → `CALL_MODULE_METHOD` / `CALL_TDF_MODULE_METHOD`（解开 TDF 包装）+ `FIRE_CALLBACK` | 否 |
+| 同步 Native 返回值 | 拦截 `NativeBridge.toNative` 的返回值（JS 包 prototype 上的 `toNative`；Android / Native iOS / 鸿蒙包平台 delegate） | **是**（运行时接线，不按方法名改写） |
 | 长连接推送 | `UPDATE_INSTANCE` pager 事件 | 否 |
 | 请求/回包关联 | `FIRE_CALLBACK` 的 `callbackId` | 否 |
 | 上报通道 | Kuikly `NetworkModule.httpRequest` | 否 |
 | 定时采样 | Kuikly 的 `setTimeout(pagerId, ms) {}`（默认 500ms） | 否 |
 | 自动挂载到 `@Page` | 改写页面类 | **是** |
 | 读取私有成员变量 | 在属主类体内生成 dumper | **是** |
+
+Kuikly 的 `attr { }` 分成两条存储路径，只读其中一条会漏属性：
+
+- 渲染样式（`backgroundColor`、`opacity`、`text`、`border`…）写入 `Props.propsMap`，`copyPropsMap()` 能拿到
+- 布局样式（`margin`、`padding`、`width`、`flex`、`flexDirection`…）只写入 `FlexNode`，**不会**进 `propsMap`
+
+agent 会把 FlexNode 上的非默认布局值合并进节点的 `p`，因此面板里的「属性」同时包含两条路径。`top` / `left` / `bottom` / `right` 写在 `FlexNode.stylePosition` 上，Kuikly 只公开了 setter；agent 用编译器 visibility suppress 读取这个 `internal` getter（与 `LayoutImpl` 同一入口）。
 
 `BridgeManager` 的 observer 钩子会收到每一次 Kotlin 与 Native 之间的调用，这也是日志和网络能力不需要改写业务调用点的原因：
 
@@ -30,6 +39,8 @@ Kuikly DevTools 的大部分能力来自 Kuikly 已有的公开 API 和 bridge o
 - `fetchMapServer` 通过 `TMKuiklyJCENetworkModule.asyncCallWithBinary`，鸿蒙实现使用对应的 TDF 调用
 - 长连接订阅经过 `TMLongLinkModule.subscribe/observe`，推送以 pager 事件到达；QMLink 和 MQTT 走各自的 Module 回调
 - 所有异步回包通过 `callKotlinMethod(FIRE_CALLBACK, pagerId, callbackId, data)`，agent 用 `callbackId` 关联请求与响应
+- 其它 `CALL_MODULE_METHOD` / `CALL_TDF_MODULE_METHOD`（`BridgeModule`、`KuiklyTDFModule.asyncCall("CalendarModule", …)`、`NotifyModule` 等）进入原生调用面板；日志 / HTTP / 长连接 / MQTT / `KRVsyncModule` 除外（含 `network.getCookie`、`TMNetworkModule.cancel` 等）
+- 同步 `toNative` 的立即返回值通过拦截 `NativeBridge.toNative` 统一采集（含 klib 里的 `CalendarModule.get` 等）；observer 仍在调用前触发
 
 Native 和 JS 运行时没有 `kotlin-reflect`。因此，要读取 `private` 字段，读取代码必须生成在字段所属类的类体内部；这正是改写器存在的主要原因。
 
@@ -54,7 +65,7 @@ flowchart LR
 
 设备端每次采样都会遍历视图树，但只上传序列化结果发生变化的节点和已删除的 id。服务端 Session Hub 合并 delta 并维护权威全量树，因此面板稍后连接也能拿到完整快照。命令放在 ingest 的 HTTP 响应体中返回，一次请求完成设备上报和面板下发，不需要第二条设备通道。
 
-日志和网络记录在设备侧先进入环形缓冲区，批量随 ingest 请求发送；服务端按页面生命周期保存记录。页面销毁时 agent 发送 `DESTROY_INSTANCE`，服务端才清理这一页的归档。
+日志、网络记录和原生调用在设备侧先进入环形缓冲区，批量随 ingest 请求发送；服务端按页面生命周期保存记录。页面销毁时 agent 发送 `DESTROY_INSTANCE`，服务端才清理这一页的归档。
 
 ## 三、插桩改写
 
@@ -64,7 +75,7 @@ Gradle init script 把目标模块的 `commonMain` 复制到 `build/kuikly-devto
 
 改写器使用 `kotlin-compiler-embeddable` 做 PSI 解析，但只使用解析器，从不调用编译器。它按源码 offset 插入代码，且不新增换行，所以插桩副本与原文件保持一致的行号，崩溃堆栈和 IDE 跳转仍然可用。改写器内嵌的 Kotlin 版本与业务工程的编译版本解耦，同一个 jar 可以服务移动端和鸿蒙链路。
 
-### 三条改写规则
+### 四条改写规则
 
 #### 1. `@Page` 类注入挂载
 
@@ -110,11 +121,20 @@ init {
 
 以下调用不会改写：`stream.println(x)`、无参 `println()`、带尾随 lambda 的调用，以及位于已发布 klib 中的代码。
 
+#### 4. 同步 Native 返回值（统一拦截 `toNative`）
+
+bridge observer 在 `toNative` **之前**触发，看不到返回值。所有 Kotlin → Native 同步调用（业务 `syncCall`、官方 `CalendarModule.get`、klib 内部实现）最终都走 `NativeBridge.toNative`，因此在这一层接返回值，而不是按模块/方法名逐个改写：
+
+- **Kotlin/JS**（`npx kuikly-devtools build-js`）：包 `NativeBridge.prototype.toNative`（含 mangled 名 `toNative_*`）。不要只包 `registerCallNative`：UMD/`$jsExportAll$` 会写回原函数，实例 `callNativeCallback` 又是懒加载
+- **Android / Native iOS / 鸿蒙**：Gradle 改写生成的 `KuiklyCoreEntry`，在 `registerNativeBridge` 之后包平台 delegate
+
+改写器不改业务里的 `syncCall` / `toNative`。`asyncCall` 也不改写。
+
 每次改写会在目标工程的 `build/kuikly-devtools/instrumentation-report.md` 生成清单，例如：
 
 ```text
 instrumented 62/128 files: 3 pages, 72 stateful classes, 225 println call sites
-pages: TDHotReloadTestPage, DevToolsTestPage, RealtimeBusLineDetailPage
+pages: TDHotReloadTestPage, DevToolsTestPage, RealtimeItemDetailPage
 ```
 
 ## 四、Gradle 接入链路
@@ -157,16 +177,18 @@ gradle.buildFinished {
 
 Android 默认通过 `adb reverse tcp:8089 tcp:8089` 访问本机；iOS 和鸿蒙使用编译期写入产物的局域网地址。agent 运行时先试 `127.0.0.1`，失败后退回该局域网地址并缓存成功地址。明文 HTTP 访问内网地址需要 debug 包允许 cleartext traffic。
 
-设备每个采样周期遍历一次树，只发送发生变化的节点。日志和网络记录默认每 1.5s 批量发送，或者在批次较大时提前发送；空闲页面不会因为单独一条日志就立即 POST。Live 截图只在树变化后调用 `Pager.toImage`，最多每 2s 一帧，并在标签页或预览不可见时暂停。
+设备每个采样周期遍历一次树，只发送发生变化的节点。日志、网络记录和原生调用默认每 1.5s 批量发送，或者在批次较大时提前发送；空闲页面不会因为单独一条日志就立即 POST，但会每 5s 发送一个空心跳，满足 8s 内至少一次。服务端 10s 未收到任何 ingest 数据时自动移除会话，作为页面突然退出的兜底。Live 截图只在树变化后调用 `Pager.toImage`，最多每 2s 一帧，并在标签页或预览不可见时暂停。
 
-设备侧最多缓冲 2000 条日志和 500 条网络记录，服务端每页最多保留 20000 条日志和 2000 条网络记录。成员变量只对面板当前展开的节点按需 dump。
+设备侧最多缓冲 2000 条日志、500 条网络记录和 500 条原生调用，服务端每页最多保留 20000 条日志、2000 条网络记录和 2000 条原生调用。成员变量只对面板当前展开的节点按需 dump。
 
 ## 六、已知边界
 
 - 已发布 klib 中的组件可以显示节点和 props，但无法读取私有成员
+- 同步 Native 返回值通过拦截 `NativeBridge.toNative` 统一采集。鸿蒙走 Kotlin Delegate、不经过 bridge 的 TDF 调用仍然可能看不到入参行
 - `BridgeManager.addCallObserver` 按 pagerId 只保存一个 observer，挂载 agent 会替换同一页面上的其它 observer
 - 打开节点会读取其 `by lazy` 属性，因此可能触发该属性初始化
 - 树是采样数据，两次 tick 之间出现又消失的变化不会被记录
 - 截图依赖 Kuikly 2.17+ 的 `DeclarativeBaseView.toImage`；虚拟节点没有 `renderView`，不能单独 Capture node
 - 截图点选使用可视坐标（布局 `f` − 祖先 `ScrollerView` 的 `so`，再叠 `p.transform`）。不是 `ScrollerView` 子类的自定义滚动容器没有 `so`，点选仍可能偏差
 - 插桩源码是副本；行号与原文件一致，但修改副本不会影响下一次构建
+- `SliderAttr.padding` 覆盖了容器 padding 且不写回 FlexNode，因此滑块的 padding 不会出现在 `p` 里

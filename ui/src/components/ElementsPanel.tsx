@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { NodeDto, ScreenshotDto } from '../protocol';
 import { buildRows } from '../tree';
-import { Inspector } from './Inspector';
+import { Inspector, ScreenshotPane } from './Inspector';
 import { VirtualTree } from './VirtualTree';
 
 interface Props {
@@ -66,6 +66,14 @@ export function ElementsPanel({
 
   return (
     <div className="panel-body">
+      <ScreenshotPane
+        node={selected}
+        nodes={nodes}
+        screenshot={screenshot}
+        onSelect={pickNode}
+        onCapture={onCapture}
+        onLive={onLive}
+      />
       <div className="split-left">
         <div className="toolbar">
           <input
@@ -111,11 +119,8 @@ export function ElementsPanel({
           node={selected}
           nodes={nodes}
           stateRequested={selectedId !== null && stateNodeIds.includes(selectedId)}
-          screenshot={screenshot}
           onRequestState={() => selectedId !== null && onRequestState([selectedId])}
           onSelect={pickNode}
-          onCapture={onCapture}
-          onLive={onLive}
         />
       </div>
     </div>

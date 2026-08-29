@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { ConsolePanel } from './components/ConsolePanel';
 import { ElementsPanel } from './components/ElementsPanel';
+import { NativeCallsPanel } from './components/NativeCallsPanel';
 import { NetworkPanel } from './components/NetworkPanel';
 import { SessionBar } from './components/SessionBar';
 import type { NodeDto } from './protocol';
 import { LIVE_SHOT_INTERVAL_MS } from './protocol';
 import type { DevtoolsStore, SessionView } from './store';
 
-type Tab = 'elements' | 'components' | 'console' | 'network';
+type Tab = 'elements' | 'components' | 'console' | 'network' | 'native';
 
 const EMPTY_NODES: Map<number, NodeDto> = new Map();
 
@@ -66,6 +67,7 @@ export function App({ store }: { store: DevtoolsStore }) {
         <TabButton id="components" tab={tab} onClick={setTab} label="组件" count={countCompose(session)} />
         <TabButton id="console" tab={tab} onClick={setTab} label="控制台" count={session?.logs.length ?? 0} />
         <TabButton id="network" tab={tab} onClick={setTab} label="网络" count={session?.network.length ?? 0} />
+        <TabButton id="native" tab={tab} onClick={setTab} label="原生调用" count={session?.native?.length ?? 0} />
         <span style={{ flex: 1 }} />
         {store.lastError && <span className="badge">{store.lastError}</span>}
       </div>
@@ -87,6 +89,8 @@ export function App({ store }: { store: DevtoolsStore }) {
         />
       ) : tab === 'network' ? (
         <NetworkPanel network={session.network} onClear={() => store.clearActiveBuffers()} />
+      ) : tab === 'native' ? (
+        <NativeCallsPanel native={session.native ?? []} onClear={() => store.clearActiveBuffers()} />
       ) : (
         <ElementsPanel
           key={tab}

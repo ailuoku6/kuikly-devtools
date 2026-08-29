@@ -173,6 +173,7 @@ def applyDevtools(Project project, File runtimeSrcDir, File instrumentorJar, Str
         commonMain.kotlin.setSrcDirs([instrumentedDir, generatedDir, runtimeSrcDir])
     }
     reroute()
+    attachPlatformRuntime(kotlinExt, runtimeSrcDir.parentFile)
     project.logger.lifecycle("[kuikly-devtools] ${project.path} commonMain -> ${instrumentedDir}")
     gradle.taskGraph.whenReady { reroute() }
 
@@ -180,13 +181,90 @@ def applyDevtools(Project project, File runtimeSrcDir, File instrumentorJar, Str
     //    At execution, drop any original commonMain files that still leaked onto the compile task.
     project.tasks.configureEach { t ->
         if (t.name == 'instrumentKuiklySources') return
-        if (!(t.name.startsWith('compile') || t.name.startsWith('ksp'))) return
+        if (!(t.name.startsWith('compile') || t.name.startsWith('ksp') || t.name.toLowerCase().contains('kapt'))) return
         t.dependsOn(instrumentTask)
+        def lower = t.name.toLowerCase()
+        if (lower.contains('ksp') || lower.contains('kapt')) {
+            t.doLast { patchNativeBridgeReturnTap(project) }
+        }
         if (!(t instanceof org.gradle.api.tasks.SourceTask)) return
         t.doFirst {
+            patchNativeBridgeReturnTap(project)
             stripOriginKotlinSources(t, originDirs, instrumentedDir, generatedDir, runtimeSrcDir, project)
         }
     }
+}
+
+/**
+ * Platform actuals that wrap NativeBridge.toNative so every sync module return is visible,
+ * including calls that only exist inside kuikly-core klib (CalendarModule.get, …).
+ */
+static void attachPlatformRuntime(kotlinExt, File runtimeRoot) {
+    def names = [] as Set
+    try {
+        names.addAll(kotlinExt.sourceSets.names)
+    } catch (Throwable ignored) {
+        return
+    }
+    def add = { String setName, String folder ->
+        if (!names.contains(setName)) return
+        def dir = new File(runtimeRoot, folder)
+        if (!dir.isDirectory()) return
+        kotlinExt.sourceSets.getByName(setName).kotlin.srcDir(dir)
+    }
+    add('androidMain', 'jvmDelegate')
+    add('jvmMain', 'jvmDelegate')
+    add('iosMain', 'apple')
+    add('appleMain', 'apple')
+    if (!names.contains('iosMain') && !names.contains('appleMain')) {
+        add('iosArm64Main', 'apple')
+        add('iosSimulatorArm64Main', 'apple')
+        add('iosX64Main', 'apple')
+        add('macosArm64Main', 'apple')
+        add('macosX64Main', 'apple')
+    }
+    add('ohosArm64Main', 'ohos')
+    add('jsMain', 'js')
+    if (!names.contains('jsMain')) {
+        add('wasmJsMain', 'js')
+    }
+}
+
+/**
+ * Generated KuiklyCoreEntry holds NativeBridge as a local and assigns the platform delegate
+ * *before* registerNativeBridge. Install the return tap on that same instance.
+ */
+static void patchNativeBridgeReturnTap(Project project) {
+    def generated = new File(project.buildDir, 'generated')
+    if (!generated.exists()) return
+    def marker = 'KDevtoolsNativeReturn.install'
+    generated.eachFileRecurse { File f ->
+        if (!f.name.endsWith('.kt')) return
+        def text
+        try {
+            text = f.getText('UTF-8')
+        } catch (Throwable ignored) {
+            return
+        }
+        if (!text.contains('registerNativeBridge')) return
+        if (text.contains(marker)) return
+        def patched = injectNativeReturnTap(text)
+        if (patched == text) return
+        f.setText(patched, 'UTF-8')
+        project.logger.lifecycle("[kuikly-devtools] wrapped NativeBridge.toNative return in ${f.name}")
+    }
+}
+
+static String injectNativeReturnTap(String text) {
+    def install = 'com.ailuoku6.kuikly.devtools.KDevtoolsNativeReturn.install'
+    def ctor = text.replaceAll(
+            /BridgeManager\.registerNativeBridge\(([^,]+),\s*NativeBridge\(\)\)/,
+            "val __kdtBridge = NativeBridge()\nBridgeManager.registerNativeBridge(\$1, __kdtBridge)\n${install}(__kdtBridge)"
+    )
+    return ctor.replaceAll(
+            /BridgeManager\.registerNativeBridge\(([^,]+),\s*(\w+)\)/,
+            "BridgeManager.registerNativeBridge(\$1, \$2)\n${install}(\$2)"
+    )
 }
 
 static void wipeKotlinCaches(Project project) {

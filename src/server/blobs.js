@@ -40,7 +40,7 @@ function applyBlobs(session, blobs) {
       buf.got += 1;
       buf.chars += blob.data.length;
     }
-    const rec = session.network.get(id);
+    const rec = lookupRecord(session, id, blob.field);
     if (rec) stampProgress(rec, buf);
     if (buf.got === buf.count) {
       attachAssembled(session, buf, buf.parts.join(''));
@@ -49,22 +49,39 @@ function applyBlobs(session, blobs) {
   }
 }
 
+function lookupRecord(session, id, field) {
+  if (session.native && (field === 'args' || session.native.has(id))) {
+    return session.native.get(id);
+  }
+  return session.network ? session.network.get(id) : undefined;
+}
+
 function stampProgress(rec, buf) {
-  if (buf.field === 'req') rec.reqGot = buf.chars;
+  if (buf.field === 'req' || buf.field === 'args') rec[buf.field === 'args' ? 'argsGot' : 'reqGot'] = buf.chars;
   else if (buf.field === 'rsp') rec.rspGot = buf.chars;
 }
 
 function attachAssembled(session, buf, text) {
-  let rec = session.network.get(buf.id);
-  if (!rec) {
-    rec = { id: buf.id };
-    session.network.set(buf.id, rec);
-    if (session.networkOrder) session.networkOrder.push(buf.id);
+  const useNative = buf.field === 'args' || (session.native && session.native.has(buf.id));
+  let rec;
+  if (useNative) {
+    rec = session.native ? session.native.get(buf.id) : undefined;
+    // Do not invent a Native Calls row from leftover arg chunks: log/HTTP modules are dropped
+    // at ingest, and a blob must not resurrect them.
+    if (!rec) return;
+  } else {
+    rec = session.network.get(buf.id);
+    if (!rec) {
+      rec = { id: buf.id };
+      session.network.set(buf.id, rec);
+      if (session.networkOrder) session.networkOrder.push(buf.id);
+    }
   }
-  if (buf.field === 'req') {
-    rec.req = text;
-    rec.reqGot = text.length;
-    rec.reqChars = text.length;
+  if (buf.field === 'req' || buf.field === 'args') {
+    const key = buf.field === 'args' ? 'args' : 'req';
+    rec[key] = text;
+    rec[`${key}Got`] = text.length;
+    rec[`${key}Chars`] = text.length;
   } else if (buf.field === 'rsp') {
     rec.rsp = text;
     rec.rspGot = text.length;
@@ -106,6 +123,11 @@ function slimForDelta(record) {
     copy.reqGot = copy.req.length;
     copy.reqChars = copy.reqChars || copy.req.length;
     delete copy.req;
+  }
+  if (shouldOmit(copy.args)) {
+    copy.argsGot = copy.args.length;
+    copy.argsChars = copy.argsChars || copy.args.length;
+    delete copy.args;
   }
   if (Array.isArray(copy.msgs)) {
     copy.msgs = copy.msgs.map((frame) => {

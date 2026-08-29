@@ -26,6 +26,10 @@ internal class KDevtoolsSession(
     private val logs = ArrayList<LogRecord>()
     private val networkOrder = ArrayList<String>()
     private val networkById = HashMap<String, NetworkRecord>()
+    private val nativeOrder = ArrayList<String>()
+    private val nativeById = HashMap<String, NativeCallRecord>()
+    private val nativeAlias = HashMap<String, String>()
+    private var nativeSerial = 0
     private val streamByEvent = HashMap<String, String>()
     private val streamByReceipt = HashMap<String, String>()
     private var streamSerial = 0
@@ -47,6 +51,8 @@ internal class KDevtoolsSession(
     private var detached = false
     private var uploadInFlight = false
     private var uploadStartedAt = 0L
+    /** Monotonic wall-clock timestamp of the last ingest attempt (data or heartbeat). */
+    private var lastUploadAt = 0L
     private var needFullSnapshot = true
     private var sampleMs = KDevtoolsConfig.SAMPLE_MS
     private var stateNodeIds: Set<Int> = emptySet()
@@ -54,6 +60,7 @@ internal class KDevtoolsSession(
     /** Logs already handed to an in-flight ingest, so a concurrent destroy can still include them. */
     private var inFlightLogs: ArrayList<LogRecord>? = null
     private var inFlightNetwork: ArrayList<NetworkRecord>? = null
+    private var inFlightNative: ArrayList<NativeCallRecord>? = null
     private var inFlightDropped = 0
     private var pendingScreenshot: JSONObject? = null
     private var screenshotInFlight = false
@@ -77,6 +84,7 @@ internal class KDevtoolsSession(
         BridgeManager.currentPageId = pagerId
         try {
             BridgeManager.addCallObserver(tap)
+            KDevtoolsNativeReturn.installForPager(pagerId)
         } finally {
             @Suppress("DEPRECATION")
             BridgeManager.currentPageId = previous
@@ -97,10 +105,14 @@ internal class KDevtoolsSession(
         networkOrder.clear()
         networkById.clear()
         networkAlias.clear()
+        nativeOrder.clear()
+        nativeById.clear()
+        nativeAlias.clear()
         streamByEvent.clear()
         streamByReceipt.clear()
         inFlightLogs = null
         inFlightNetwork = null
+        inFlightNative = null
         screenshotInFlight = false
         pendingScreenshot = null
         queuedShotId = null
@@ -235,7 +247,44 @@ internal class KDevtoolsSession(
         networkById[callbackId] ?: networkAlias[callbackId]?.let { networkById[it] }
 
     /** True when the id belongs to a request's error callback rather than its success callback. */
-    fun isErrorCallback(callbackId: String): Boolean = networkAlias.containsKey(callbackId)
+    fun isErrorCallback(callbackId: String): Boolean =
+        networkAlias.containsKey(callbackId) || nativeAlias.containsKey(callbackId)
+
+    fun onNativeStart(record: NativeCallRecord, errorCallbackId: String? = null) {
+        if (detached) return
+        evictNativeIfNeeded()
+        nativeOrder.add(record.id)
+        nativeById[record.id] = record
+        if (!errorCallbackId.isNullOrEmpty()) {
+            if (nativeAlias.size >= MAX_NATIVE_BUFFERED * 2) {
+                nativeAlias.clear()
+            }
+            nativeAlias[errorCallbackId] = record.id
+        }
+    }
+
+    fun nextNativeId(): String {
+        nativeSerial += 1
+        return "nc_$pagerId-$nativeSerial"
+    }
+
+    fun pendingNative(callbackId: String): NativeCallRecord? =
+        nativeById[callbackId] ?: nativeAlias[callbackId]?.let { nativeById[it] }
+
+    private fun evictNativeIfNeeded() {
+        if (nativeOrder.size < MAX_NATIVE_BUFFERED) return
+        var victimIndex = -1
+        for (index in nativeOrder.indices) {
+            val record = nativeById[nativeOrder[index]]
+            if (record != null && !record.isOpen) {
+                victimIndex = index
+                break
+            }
+        }
+        if (victimIndex < 0) victimIndex = 0
+        val victim = nativeOrder.removeAt(victimIndex)
+        nativeById.remove(victim)
+    }
 
     // -------------------------------------------------------------------- uploading
 
@@ -251,8 +300,13 @@ internal class KDevtoolsSession(
             val record = networkById[id] ?: continue
             if (record.needsUpload()) flushedNetwork.add(record)
         }
+        val flushedNative = ArrayList<NativeCallRecord>()
+        for (id in nativeOrder) {
+            val record = nativeById[id] ?: continue
+            if (record.needsUpload()) flushedNative.add(record)
+        }
 
-        // Tree/screenshot still go out this tick. Logs and dirty network records stay in the
+        // Tree/screenshot still go out this tick. Logs and dirty network/native records stay in the
         // buffer until AUX_FLUSH_MS (or a burst cap) so a chatty println does not POST every
         // sample. Chunked bodies flush immediately so a multi-megabyte rsp is not delayed 1.5s
         // per slice.
@@ -261,8 +315,9 @@ internal class KDevtoolsSession(
         val hasShot = pendingScreenshot != null
         val logCount = logs.size
         val netCount = flushedNetwork.size
-        val hasBlobs = flushedNetwork.any { it.hasUnsentBlobs() }
-        val hasAux = logCount > 0 || netCount > 0
+        val nativeCount = flushedNative.size
+        val hasBlobs = flushedNetwork.any { it.hasUnsentBlobs() } || flushedNative.any { it.hasUnsentBlobs() }
+        val hasAux = logCount > 0 || netCount > 0 || nativeCount > 0
         if (hasAux && auxDeadlineAt == 0L) {
             auxDeadlineAt = now + AUX_FLUSH_MS
         }
@@ -270,10 +325,17 @@ internal class KDevtoolsSession(
             hasBlobs ||
                 now >= auxDeadlineAt ||
                 logCount >= AUX_FLUSH_LOGS ||
-                netCount >= AUX_FLUSH_NETWORK
+                netCount >= AUX_FLUSH_NETWORK ||
+                nativeCount >= AUX_FLUSH_NATIVE
             )
 
-        if (!hasTree && !hasShot && !flushAux) {
+        // An otherwise idle page still needs to prove that it is alive. Keep this on the same
+        // ingest request so the server's lastSeenAt advances without introducing another channel.
+        // This is below both the server's 10 s expiry window and the configurable 5 s sampling
+        // interval, so an idle page never waits more than eight seconds before its next heartbeat.
+        val heartbeatDue = lastUploadAt == 0L || now - lastUploadAt >= HEARTBEAT_INTERVAL_MS
+        val heartbeat = !hasTree && !hasShot && !flushAux && heartbeatDue
+        if (!hasTree && !hasShot && !flushAux && !heartbeat) {
             return
         }
 
@@ -290,10 +352,17 @@ internal class KDevtoolsSession(
         droppedLogs = 0
 
         val networkJson = JSONArray()
+        val nativeJson = JSONArray()
         val blobsJson = JSONArray()
         var blobBudget = BLOB_BUDGET_CHARS
         for (record in flushedNetwork) {
             networkJson.put(record.toJson())
+            if (blobBudget > 0) {
+                blobBudget -= record.drainBlobs(blobBudget, blobsJson)
+            }
+        }
+        for (record in flushedNative) {
+            nativeJson.put(record.toJson())
             if (blobBudget > 0) {
                 blobBudget -= record.drainBlobs(blobBudget, blobsJson)
             }
@@ -325,6 +394,10 @@ internal class KDevtoolsSession(
             })
             put("logs", logsJson)
             put("network", networkJson)
+            put("native", nativeJson)
+            if (heartbeat) {
+                put("heartbeat", true)
+            }
             if (blobsJson.length() > 0) {
                 put("blobs", blobsJson)
             }
@@ -338,20 +411,29 @@ internal class KDevtoolsSession(
 
         uploadInFlight = true
         uploadStartedAt = DateTime.currentTimestamp()
+        lastUploadAt = uploadStartedAt
         inFlightLogs = flushedLogs
         inFlightNetwork = flushedNetwork
+        inFlightNative = flushedNative
         inFlightDropped = droppedNow
         transport.send(payload) { ok, commands ->
             uploadInFlight = false
             inFlightLogs = null
             inFlightNetwork = null
+            inFlightNative = null
             inFlightDropped = 0
             if (ok) {
                 for (record in flushedNetwork) {
                     record.commitDrain()
                 }
+                for (record in flushedNative) {
+                    record.commitDrain()
+                }
             } else {
                 for (record in flushedNetwork) {
+                    record.revertDrain()
+                }
+                for (record in flushedNative) {
                     record.revertDrain()
                 }
             }
@@ -394,13 +476,26 @@ internal class KDevtoolsSession(
             networkById[id]?.let { addNetwork(it) }
         }
 
+        val pendingNative = ArrayList<NativeCallRecord>()
+        val seenNative = HashSet<String>()
+        fun addNative(record: NativeCallRecord) {
+            if (seenNative.add(record.id)) pendingNative.add(record)
+        }
+        inFlightNative?.forEach { addNative(it) }
+        for (id in nativeOrder) {
+            nativeById[id]?.let { addNative(it) }
+        }
+
         val logsJson = JSONArray()
         for (record in pendingLogs) logsJson.put(record.toJson())
         val networkJson = JSONArray()
         for (record in pendingNetwork) networkJson.put(record.toJson())
+        val nativeJson = JSONArray()
+        for (record in pendingNative) nativeJson.put(record.toJson())
 
         val blobQueue = ArrayList<JSONObject>()
         for (record in pendingNetwork) blobQueue.addAll(record.snapshotBlobs())
+        for (record in pendingNative) blobQueue.addAll(record.snapshotBlobs())
 
         var offset = 0
         var first = true
@@ -427,6 +522,7 @@ internal class KDevtoolsSession(
                 put("ts", DateTime.currentTimestamp())
                 put("destroyed", true)
                 put("network", networkJson)
+                put("native", nativeJson)
                 if (first) {
                     put("droppedLogs", droppedLogs + inFlightDropped)
                     put("logs", logsJson)
@@ -619,6 +715,9 @@ internal class KDevtoolsSession(
                     networkOrder.clear()
                     networkById.clear()
                     networkAlias.clear()
+                    nativeOrder.clear()
+                    nativeById.clear()
+                    nativeAlias.clear()
                     streamByEvent.clear()
                     streamByReceipt.clear()
                 }
@@ -677,6 +776,7 @@ internal class KDevtoolsSession(
         const val PROTOCOL_VERSION = 1
         const val MAX_LOGS_BUFFERED = 2000
         const val MAX_NETWORK_BUFFERED = 500
+        const val MAX_NATIVE_BUFFERED = 500
         const val MIN_SAMPLE_MS = 100
         const val MAX_SAMPLE_MS = 5000
         const val DEFAULT_SHOT_SAMPLE = 2
@@ -690,6 +790,9 @@ internal class KDevtoolsSession(
         const val AUX_FLUSH_MS = 1500L
         const val AUX_FLUSH_LOGS = 64
         const val AUX_FLUSH_NETWORK = 16
+        const val AUX_FLUSH_NATIVE = 16
+        /** Leaves room for the 5 s maximum sampling interval while meeting the 8 s heartbeat SLA. */
+        const val HEARTBEAT_INTERVAL_MS = 5_000L
         const val MAX_SCREENSHOT_CHARS = 8_000_000
         /** Payload budget for body chunks on one ingest POST (chars of chunk data, not JSON). */
         const val BLOB_BUDGET_CHARS = 160_000

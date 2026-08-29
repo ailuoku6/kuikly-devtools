@@ -4,6 +4,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { WebSocketServer } = require('ws');
+const { isLogOrNetworkNative, visibleNative } = require('./hub');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -43,11 +44,17 @@ function createPanelServer({ hub, port, host = '0.0.0.0', uiDir, onEvent = () =>
     if (url.pathname === '/api/inspect/network') {
       return respondInspectNetwork(res, hub, url);
     }
+    if (url.pathname === '/api/inspect/native') {
+      return respondInspectNative(res, hub, url);
+    }
     if (url.pathname === '/api/inspect/nodes') {
       return respondInspectNodes(res, hub, url);
     }
     if (url.pathname.startsWith('/api/inspect/network/')) {
       return respondInspectNetworkDetail(res, hub, url);
+    }
+    if (url.pathname.startsWith('/api/inspect/native/')) {
+      return respondInspectNativeDetail(res, hub, url);
     }
     if (url.pathname.startsWith('/api/inspect/nodes/')) {
       return respondInspectNodeDetail(res, hub, url);
@@ -223,6 +230,49 @@ function respondInspectLogDetail(res, hub, url) {
   const log = session.logs.find((entry) => entry.seq === seq);
   if (!log) return respondJson(res, 404, { error: 'unknown log record' });
   return respondJson(res, 200, { pagerId: session.pagerId, page: session.page, log });
+}
+
+function compactNative(record) {
+  const compact = { ...record };
+  delete compact.args;
+  delete compact.rsp;
+  delete compact.msgs;
+  if (typeof record.args === 'string') compact.argsPreview = preview(record.args);
+  if (typeof record.rsp === 'string') compact.rspPreview = preview(record.rsp);
+  if (Array.isArray(record.msgs)) compact.frames = record.msgs.length;
+  return compact;
+}
+
+function respondInspectNative(res, hub, url) {
+  const session = inspectSession(hub, url);
+  if (!session) return respondJson(res, 404, { error: 'unknown session' });
+  const query = url.searchParams.get('q') || url.searchParams.get('query') || '';
+  const kind = url.searchParams.get('kind') || '';
+  const matched = visibleNative(session)
+    .filter((record) => {
+      if (kind === 'sync' && !record.sync) return false;
+      if (kind === 'async' && record.sync) return false;
+      if (kind === 'stream' && record.kind !== 'stream') return false;
+      return matchesQuery(record.mod, query) || matchesQuery(record.method, query) ||
+        matchesQuery(record.via, query) || matchesQuery(record.id, query) ||
+        matchesQuery(record.args, query);
+    });
+  const page = inspectPage(url, matched.length);
+  return respondJson(res, 200, {
+    pagerId: session.pagerId,
+    page: session.page,
+    ...page,
+    native: matched.slice(page.offset, page.offset + page.limit).map(compactNative),
+  });
+}
+
+function respondInspectNativeDetail(res, hub, url) {
+  const session = inspectSession(hub, url);
+  if (!session) return respondJson(res, 404, { error: 'unknown session' });
+  const id = decodeURIComponent(url.pathname.slice('/api/inspect/native/'.length));
+  const record = session.native ? session.native.get(id) : null;
+  if (!record || isLogOrNetworkNative(record.mod)) return respondJson(res, 404, { error: 'unknown native call' });
+  return respondJson(res, 200, { pagerId: session.pagerId, page: session.page, native: record });
 }
 
 function respondInspectNetwork(res, hub, url) {

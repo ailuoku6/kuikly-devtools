@@ -2,7 +2,7 @@
 
 > English: [README-EN.md](README-EN.md) ｜ 原理详解：[ARCHITECTURE.md](ARCHITECTURE.md) ｜ 协议细节：[PROTOCOL.md](PROTOCOL.md)
 
-给 Kuikly（Kotlin Multiplatform）页面用的类 Chrome DevTools 调试面板。页面跑在真机上，浏览器里实时看到节点树、属性与布局、组件成员变量、日志和网络请求。
+给 Kuikly（Kotlin Multiplatform）页面用的类 Chrome DevTools 调试面板。页面跑在真机上，浏览器里实时看到节点树、属性与布局、组件成员变量、日志、网络请求和原生模块调用。
 
 插桩是**可选开关**。不带开关时构建产物与今天完全一致：业务源码一行不改，不新增任何依赖，插桩代码不可能进入发布产物。
 
@@ -18,7 +18,7 @@ npx kuikly-devtools dev
 npx kuikly-devtools build-apk
 ```
 
-两条命令都会在构建成功后打印调试面板地址（默认是 `http://localhost:8090`）。在浏览器打开这个地址，再在设备上打开或刷新页面，即可查看节点树、组件状态、日志和网络请求。
+两条命令都会在构建成功后打印调试面板地址（默认是 `http://localhost:8090`）。在浏览器打开这个地址，再在设备上打开或刷新页面，即可查看节点树、组件状态、日志、网络请求和原生调用。
 
 ### 效果预览
 
@@ -53,7 +53,7 @@ npx kuikly-devtools inspect sessions  # 为 AI 或命令行按需检索已连接
 
 ### AI 页面检索 Skill
 
-npm 包内置 `kuikly-page-inspect` Skill，供 Codex、Claude Code 与 Cursor 在排查 UI、日志和网络问题时按需读取**正在运行**的 Kuikly 页面信息。它不读取全量页面快照，先通过分页检索定位所需记录，避免大页面、长日志和接口 body 膨胀 AI 上下文。在业务工程根目录执行一次即可为三个客户端创建项目级入口：
+npm 包内置 `kuikly-page-inspect` Skill，供 Codex、Claude Code 与 Cursor 在排查 UI、日志、网络和原生调用问题时按需读取**正在运行**的 Kuikly 页面信息。它不读取全量页面快照，先通过分页检索定位所需记录，避免大页面、长日志和接口 body 膨胀 AI 上下文。在业务工程根目录执行一次即可为三个客户端创建项目级入口：
 
 ```bash
 npx kuikly-devtools init-skill
@@ -71,18 +71,20 @@ npx kuikly-devtools init-skill
 # 1. 获取已连接页面，选择 pagerId
 npx kuikly-devtools inspect sessions
 
-# 2. 只检索匹配的日志、网络或节点；默认每页最多 50 条
+# 2. 只检索匹配的日志、网络、原生调用或节点；默认每页最多 50 条
 npx kuikly-devtools inspect logs --pager 7 --query timeout
 npx kuikly-devtools inspect network --pager 7 --query /api/search --status 500
+npx kuikly-devtools inspect native --pager 7 --query CalendarModule
 npx kuikly-devtools inspect nodes --pager 7 --query SearchBar
 
 # 3. 找到 ID 后再取单条详情
 npx kuikly-devtools inspect network-detail --pager 7 --id cb_42
+npx kuikly-devtools inspect native-detail --pager 7 --id nc_1
 npx kuikly-devtools inspect log-detail --pager 7 --id 42
 npx kuikly-devtools inspect node-detail --pager 7 --id 42
 ```
 
-`logs` 支持 `--level`、`--tag`；`network` 支持 `--status`、`--kind`；所有列表支持 `--limit`（默认 50，最大 200）和 `--offset` 分页。检索结果只返回摘要、属性键与请求/响应预览。返回 JSON 不超过 15 KiB 时直接返回原数据；只有单条详情严格超过 15 KiB，CLI 才会把完整 JSON 写到**业务项目根目录**的 `.kuiklyPageTemp/`，终端仅返回 `savedTo` 路径；AI 应只读取该文件需要的字段或片段，不能直接将完整文件注入上下文。该目录已被 Git 忽略，调试后可手动删除，或执行：
+`logs` 支持 `--level`、`--tag`；`network` 支持 `--status`、`--kind`；`native` 支持 `--kind`（`sync` / `async` / `stream`）；所有列表支持 `--limit`（默认 50，最大 200）和 `--offset` 分页。检索结果只返回摘要、属性键与请求/响应预览。返回 JSON 不超过 15 KiB 时直接返回原数据；只有单条详情严格超过 15 KiB，CLI 才会把完整 JSON 写到**业务项目根目录**的 `.kuiklyPageTemp/`，终端仅返回 `savedTo` 路径；AI 应只读取该文件需要的字段或片段，不能直接将完整文件注入上下文。该目录已被 Git 忽略，调试后可手动删除，或执行：
 
 ```bash
 npx kuikly-devtools inspect clean-temp
@@ -107,11 +109,11 @@ npx kuikly-devtools inspect clean-temp
 
 ---
 
-## 二、四个面板
+## 二、五个面板
 
 ### Elements
 
-节点树来自 `ViewContainer.templateChildren()`，也就是 DSL 结构，不是原生 view 树，因此虚拟容器和 `ComposeView` 边界也能看到。Inspector 可查看节点信息、布局、全部 props、按需读取的成员变量和 Live 截图。
+节点树来自 `ViewContainer.templateChildren()`，也就是 DSL 结构，不是原生 view 树，因此虚拟容器和 `ComposeView` 边界也能看到。Inspector 可查看节点信息、布局（含 FlexNode 的 margin / padding）、全部 props、按需读取的成员变量和 Live 截图。
 
 树上的视觉约定：紫色标签表示 `ComposeView`，蓝色标签表示普通节点，`◌` 表示没有对应原生 view 的虚拟节点，`S` 表示有可 dump 的成员变量。节点后面的 `x,y · w×h` 是相对页面根节点的**布局**坐标（`convertFrame`）。成员变量按需拉取，只有点开节点时才会通知设备 dump，避免每帧序列化整棵树的状态。Live 截图在树变化时才调用 `toImage`，最多每 2s 一帧；点击截图会按**可视**坐标命中节点（布局框减去祖先 Scroller 的 `contentOffset`，再叠 `transform`，并按 overflow 裁剪）。重叠时按绘制顺序：`zIndex`、后声明的兄弟、子节点；铺满全屏但不绘制自身的 overlay 会把空白处透传下去，避免挡住下面的页卡。
 
@@ -127,13 +129,19 @@ npx kuikly-devtools inspect clean-temp
 
 展示 HTTP（`KRNetworkModule`、TDF `network.fetch`、`TMNetworkModule.fetchMapServer`）及长连接请求（`TMLongLinkModule`、QMLink、MQTT）。选中请求可查看请求头、请求体、Response、状态码、耗时和 `callbackId`；普通 HTTP（`KRNetworkModule` / `network.fetch`）可一键复制为 curl。请求发出时先显示 `pend`，回包后补齐状态和耗时；长连接推送会单独列出 Frames。
 
-日志和网络请求以 serve 端为权威存档。设备上报成功后本地缓冲会清掉，但服务端会保留；只有 Kuikly 页面销毁（`DESTROY_INSTANCE`）时，该页数据才会删除。
+### 原生调用
+
+展示 Kotlin → Native 的 Module 调用（[使用 Module 调用 Native 方法](https://kuikly.tds.qq.com/DevGuide/dev-guide-overview.html)）：`Module.toNative` / `toTDFNative`，以及业务里常见的 `KuiklyTDFModule.asyncCall/syncCall`、`TMKuiklyBridgeModule`、`BridgeModule` 等。TDF 包装会被解开，所以 `KuiklyTDFModule.asyncCall("CalendarModule", "getReminderList", …)` 显示为 `CalendarModule.getReminderList`，入参和异步返回值（`FIRE_CALLBACK`）都能看到。
+
+同步调用的立即返回值通过拦截 `NativeBridge.toNative` 统一采集（含官方 `CalendarModule.get` 等 klib 内部调用）。请重新插桩编译后再看返回值。异步回调始终能显示。日志、HTTP、长连接、MQTT 以及每帧 vsync 不在此面板出现（分别在控制台、网络里，含 cookie / cancel 等辅助调用）。鸿蒙上走 Kotlin Delegate、不经过 bridge 的调用也无法采集。
+
+日志、网络请求和原生调用以 serve 端为权威存档。设备上报成功后本地缓冲会清掉，但服务端会保留；只有 Kuikly 页面销毁（`DESTROY_INSTANCE`）时，该页数据才会删除。
 
 ---
 
 ## 三、工作原理概览
 
-设备端 agent 通过 Kuikly 的公开视图 API 和 bridge observer 采集节点树、属性、布局、日志及网络请求；CLI 只在需要调试的那次 Gradle 构建中注入 init script，把 agent 挂到 `@Page`，并为源码类生成私有成员变量 dumper。设备把变化上传到 ingest 服务，浏览器面板通过 WebSocket 查看服务端维护的会话数据。
+设备端 agent 通过 Kuikly 的公开视图 API 和 bridge observer 采集节点树、属性、布局、日志、网络请求和原生模块调用；CLI 只在需要调试的那次 Gradle 构建中注入 init script，把 agent 挂到 `@Page`，为源码类生成私有成员变量 dumper，并把 `println` 接到控制台。同步 Native 返回值在运行时拦截 `NativeBridge.toNative`。设备把变化上传到 ingest 服务，浏览器面板通过 WebSocket 查看服务端维护的会话数据。
 
 原理、数据流、插桩规则、Gradle 接入和缓存隔离的详细说明见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
@@ -153,7 +161,7 @@ npx kuikly-devtools inspect clean-temp
 
 ## 五、开销与边界
 
-设备每个采样周期走一遍树，只发序列化结果变化过的节点和消失的 id；完全空闲的页面不会发送数据。成员变量只 dump 面板当前展开的节点，Live 截图只在树变化后采集，最多 2s 一帧。采样间隔可以在面板顶栏改（100ms ~ 5s），或者构建时用 `--sample` 指定。
+设备每个采样周期走一遍树，只发序列化结果变化过的节点和消失的 id；日志、网络和原生调用在设备侧缓冲，约 1.5s 批量上报。完全空闲的页面仍会每 5s 发送一个空心跳，满足 8s 内至少一次；服务端连续 10s 未收到数据就移除该页面会话，兜底处理突然退出。成员变量只 dump 面板当前展开的节点，Live 截图只在树变化后采集，最多 2s 一帧。采样间隔可以在面板顶栏改（100ms ~ 5s），或者构建时用 `--sample` 指定。
 
 只有被插桩模块里的源码可以读取私有成员；已发布 klib 中的组件只能看到节点和 props。`BridgeManager.addCallObserver` 每个 pagerId 只保存一个 observer，挂载 agent 会替换同一页面上的其它 observer。展开节点会读取其 `by lazy` 属性，可能触发初始化。树是采样的，不是逐帧录制；截图依赖 Kuikly 2.17+ 的 `DeclarativeBaseView.toImage`，虚拟节点不能单独截图。插桩后的源码是副本，行号与原文件一致，但修改副本没有意义。
 
@@ -163,7 +171,7 @@ npx kuikly-devtools inspect clean-temp
 
 **面板提示 `panel bundle is missing`**：在 devtools 仓库执行 `npm run build:ui`。
 
-**Gradle 提示 `instrumentor jar missing`**：执行 `npm run build:instrumentor`。临时只验证接线可以加 `--copy-only`，但这样拿不到成员变量和 `println`。
+**Gradle 提示 `instrumentor jar missing`**：执行 `npm run build:instrumentor`。临时只验证接线可以加 `--copy-only`，但这样拿不到成员变量、`println` 和同步 Native 返回值。
 
 **面板一直显示 `Waiting for a Kuikly page`**：确认构建日志出现 `[kuikly-devtools] instrumented N files: M pages`，设备日志出现 `attached ... -> host:port`，并检查 Android 的 `adb reverse`、iOS/鸿蒙的局域网连通性和 debug 明文 HTTP 配置。
 

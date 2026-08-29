@@ -1,5 +1,6 @@
 /** Mirrors PROTOCOL.md. Keys are short on purpose: a full tree carries thousands of nodes.
- *  Device ingest extras: `sid` (session identity) and `destroyed` (pager gone, drop the archive).
+ *  Device ingest extras: `sid` (session identity), `destroyed` (pager gone, drop the archive), and
+ *  `heartbeat` (an otherwise empty liveness packet sent on the ingest route).
  */
 
 export interface NodeDto {
@@ -21,7 +22,7 @@ export interface NodeDto {
   lf?: [number, number];
   /** ScrollerView contentOffset `[offsetX, offsetY]`. Panel subtracts ancestor `so` from `f` for pick. */
   so?: [number, number];
-  /** attr.copyPropsMap() */
+  /** attr.copyPropsMap() plus FlexNode layout (margin / padding / width / flex / …) */
   p?: Record<string, unknown>;
   /** a state dumper is installed */
   hs?: boolean;
@@ -77,9 +78,59 @@ export interface NetworkDto {
   frames?: number;
 }
 
+export interface NativeCallDto {
+  id: string;
+  /** Unwrapped native module name (`CalendarModule`, `HRBridgeModule`, …). */
+  mod: string;
+  method: string;
+  /** Bridge wrapper, e.g. `KuiklyTDFModule.asyncCall` or `callModuleMethod`. */
+  via: string;
+  sync?: boolean;
+  args?: string;
+  ts: number;
+  cost?: number;
+  ok?: boolean;
+  rsp?: string;
+  err?: string;
+  argsChars?: number;
+  rspChars?: number;
+  argsGot?: number;
+  rspGot?: number;
+  argsChunks?: number;
+  rspChunks?: number;
+  kind?: 'stream';
+  msgs?: NetworkFrameDto[];
+  frames?: number;
+}
+
+/** Console / Network already own these modules; keep aligned with the Kotlin bridge tap. */
+export function isLogOrNetworkNative(mod?: string): boolean {
+  if (!mod) return false;
+  if (
+    mod === 'KRLogModule' ||
+    mod === 'KRNetworkModule' ||
+    mod === 'KRVsyncModule' ||
+    mod === 'network' ||
+    mod === 'TMNetworkModule' ||
+    mod === 'TMLongLinkModule' ||
+    mod === 'TMKuiklyLongLinkModule' ||
+    mod === 'TMKuiklyMQTTModule' ||
+    mod === 'TMKuiklyJCENetworkModule'
+  ) {
+    return true;
+  }
+  const lower = mod.toLowerCase();
+  return (
+    lower.includes('logmodule') ||
+    lower.includes('networkmodule') ||
+    lower.includes('longlink') ||
+    lower.includes('mqtt')
+  );
+}
+
 export interface BodyBlobDto {
   id: string;
-  field: 'req' | 'rsp' | 'frame' | string;
+  field: 'req' | 'rsp' | 'frame' | 'args' | string;
   index: number;
   count: number;
   data: string;
@@ -125,6 +176,7 @@ export interface SessionSummary {
   nodeCount: number;
   logCount: number;
   networkCount: number;
+  nativeCount?: number;
   /** Logs the device's ring buffer had to drop; surfaced so the console never silently lies. */
   droppedLogs: number;
   sampleMs: number;
@@ -138,6 +190,7 @@ export interface FullSessionState extends SessionSummary {
   nodes: NodeDto[];
   logs: LogDto[];
   network: NetworkDto[];
+  native?: NativeCallDto[];
   stateNodeIds: number[];
   screenshot?: ScreenshotDto | null;
 }
@@ -152,6 +205,7 @@ export interface DeltaMessage {
   removed: number[];
   logs: LogDto[];
   network: NetworkDto[];
+  native?: NativeCallDto[];
   screenshot?: ScreenshotDto;
   blobs?: BodyBlobDto[];
 }

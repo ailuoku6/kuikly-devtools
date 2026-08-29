@@ -45,7 +45,7 @@ const sessionKeys = kotlinKeys('KDevtoolsSession.kt');
 assertContains(
   sessionKeys,
   ['v', 'pagerId', 'sid', 'page', 'class', 'platform', 'seq', 'ts', 'full', 'sampleMs', 'droppedLogs',
-    'tree', 'logs', 'network', 'blobs', 'device', 'nodes', 'removed', 'total', 'changed', 'destroyed',
+    'tree', 'logs', 'network', 'native', 'blobs', 'device', 'nodes', 'removed', 'total', 'changed', 'destroyed', 'heartbeat',
     'screenshot', 'id', 'sample', 'data', 'err', 'ox', 'oy', 'ow', 'oh', 'live'],
   'payload envelope'
 );
@@ -62,9 +62,17 @@ assertContains(
   'NetworkDto'
 );
 
+const nativeKeys = kotlinKeys('KDevtoolsNative.kt');
+assertContains(
+  nativeKeys,
+  ['id', 'mod', 'method', 'via', 'sync', 'args', 'ts', 'cost', 'ok', 'rsp', 'err',
+    'kind', 'msgs', 'frames', 'dir', 'data', 'field', 'index', 'count', 'dataChars'],
+  'NativeCallDto'
+);
+
 // --- the TypeScript side must declare every key the agent sends ----------------
 const protocolTs = fs.readFileSync(PROTOCOL_TS, 'utf8');
-for (const key of ['ci', 'hs', 'cv', 'lf', 'so', 'stack', 'droppedLogs', 'sampleMs', 'sid', 'destroyed', 'kind', 'msgs', 'frames', 'screenshot', 'shot', 'live', 'ox', 'oy', 'ow', 'oh', 'blobs', 'rspChars', 'reqChars', 'hdr']) {
+for (const key of ['ci', 'hs', 'cv', 'lf', 'so', 'stack', 'droppedLogs', 'sampleMs', 'sid', 'destroyed', 'heartbeat', 'kind', 'msgs', 'frames', 'screenshot', 'shot', 'live', 'ox', 'oy', 'ow', 'oh', 'blobs', 'rspChars', 'reqChars', 'hdr', 'native', 'mod', 'via', 'args', 'nativeCount']) {
   assert.ok(protocolTs.includes(key), `protocol.ts is missing the "${key}" field`);
 }
 
@@ -97,6 +105,46 @@ assert.equal(
 assert.ok(
   tap.includes('TMLongLinkModule') && tap.includes('UPDATE_INSTANCE'),
   'the bridge tap must capture TMLongLinkModule subscribe/observe and pager-event pushes'
+);
+assert.ok(
+  tap.includes('onNativeModule') &&
+    tap.includes('onNativeCallback') &&
+    tap.includes('isLogOrNetworkNativeModule') &&
+    tap.includes('TMKuiklyBridgeModule'),
+  'the bridge tap must capture generic module/TDF calls (skipping log/network/vsync) and unwrap TDF/Hippy wrappers'
+);
+assert.ok(
+  !fs.readFileSync(path.join(RUNTIME, 'KDevtools.kt'), 'utf8').includes('traceSyncReturn') &&
+    !fs.readFileSync(path.join(RUNTIME, 'KDevtoolsNativeReturn.kt'), 'utf8').includes('onInstrumentedSyncReturn') &&
+    !fs.readFileSync(
+      path.join(ROOT, 'instrumentor', 'src', 'main', 'kotlin', 'com', 'ailuoku6', 'kuikly', 'devtools', 'instrumentor', 'SourceInstrumentor.kt'),
+      'utf8'
+    ).includes('traceSyncReturn'),
+  'sync native returns are not captured by rewriting app call sites'
+);
+assert.ok(
+  fs.readFileSync(path.join(RUNTIME, 'KDevtoolsNativeReturn.kt'), 'utf8').includes('onToNativeReturn') &&
+    fs.readFileSync(path.join(RUNTIME, 'KDevtoolsNativeReturn.kt'), 'utf8').includes('wrapNativeBridge') &&
+    fs.existsSync(path.join(ROOT, 'runtime', 'js', 'com', 'ailuoku6', 'kuikly', 'devtools', 'KDevtoolsNativeReturn.js.kt')) &&
+    fs.readFileSync(
+      path.join(ROOT, 'runtime', 'js', 'com', 'ailuoku6', 'kuikly', 'devtools', 'KDevtoolsNativeReturn.js.kt'),
+      'utf8'
+    ).includes('toNative') &&
+    fs.readFileSync(
+      path.join(ROOT, 'runtime', 'js', 'com', 'ailuoku6', 'kuikly', 'devtools', 'KDevtoolsNativeReturn.js.kt'),
+      'utf8'
+    ).includes('__kdtToNative') &&
+    fs.readFileSync(path.join(ROOT, 'gradle', 'devtools.init.gradle'), 'utf8').includes('KDevtoolsNativeReturn.install'),
+  'sync native returns are captured by tapping NativeBridge.toNative (JS: prototype toNative)'
+);
+assert.ok(
+  fs.readFileSync(path.join(ROOT, 'src', 'server', 'hub.js'), 'utf8').includes('isLogOrNetworkNative') &&
+    fs.readFileSync(path.join(ROOT, 'ui', 'src', 'protocol.ts'), 'utf8').includes('isLogOrNetworkNative'),
+  'server and panel must drop log/network native rows so they are not duplicated outside Console/Network'
+);
+assert.ok(
+  fs.readFileSync(path.join(ROOT, 'ui', 'src', 'App.tsx'), 'utf8').includes('原生调用'),
+  'the panel must expose a Native Calls tab'
 );
 assert.ok(
   tap.includes('isHttpEnvelope') && tap.includes('extractHttpBody') && tap.includes('respBody'),
@@ -159,6 +207,10 @@ assert.ok(
   sessionSrc.includes('const val AUX_FLUSH_MS = 1500L'),
   'logs and network must be held in the agent buffer instead of POSTing on every sample tick'
 );
+assert.ok(
+  sessionSrc.includes('const val AUX_FLUSH_NATIVE = 16'),
+  'native module calls must be held in the agent buffer with the same aux flush as network'
+);
 
 assert.ok(
   tap.includes('extractRequestHeaders') && tap.includes('cookie'),
@@ -196,6 +248,57 @@ assert.ok(
   const hex = `0x${bits.toString(16).toUpperCase().padStart(8, '0')}`;
   assert.strictEqual(hex.length, 10, 'ARGB hex is 0x + 8 digits');
   assert.ok(hex.startsWith('0xFF') || hex.startsWith('0x'), hex);
+}
+
+const layoutSrc = fs.readFileSync(path.join(RUNTIME, 'KDevtoolsLayout.kt'), 'utf8');
+assert.ok(
+  fs.readFileSync(path.join(RUNTIME, 'KDevtoolsTree.kt'), 'utf8').includes('collectViewProps'),
+  'the tree walk must merge FlexNode layout into p, not emit copyPropsMap alone'
+);
+assert.ok(
+  layoutSrc.includes('copyPropsMap()') &&
+    layoutSrc.includes('getMargin') &&
+    layoutSrc.includes('getPadding') &&
+    layoutSrc.includes('styleWidth') &&
+    layoutSrc.includes('styleHeight') &&
+    layoutSrc.includes('styleMinWidth') &&
+    layoutSrc.includes('styleMaxWidth') &&
+    layoutSrc.includes('flexDirection') &&
+    layoutSrc.includes('justifyContent') &&
+    layoutSrc.includes('alignItems') &&
+    layoutSrc.includes('alignSelf') &&
+    layoutSrc.includes('positionType') &&
+    layoutSrc.includes('keepAlive') &&
+    layoutSrc.includes('INVISIBLE_MEMBER') &&
+    layoutSrc.includes('node.stylePosition'),
+  'layout collection must cover FlexNode margin/padding/size/flex, Attr.keepAlive, and stylePosition'
+);
+assert.ok(
+  inspectorSrc.includes('boxSides') &&
+    inspectorSrc.includes('node.p?.margin') &&
+    inspectorSrc.includes('node.p?.padding'),
+  'the box model must render FlexNode margin and padding'
+);
+{
+  const elementsSrc = fs.readFileSync(path.join(ROOT, 'ui', 'src', 'components', 'ElementsPanel.tsx'), 'utf8');
+  assert.ok(
+    elementsSrc.includes('ScreenshotPane') &&
+      elementsSrc.indexOf('<ScreenshotPane') < elementsSrc.indexOf('split-left'),
+    'the screenshot pane must sit in its own leftmost column, not above the inspector'
+  );
+}
+assert.ok(
+  inspectorSrc.includes('split-shot') &&
+    inspectorSrc.includes('shot-fit') &&
+    inspectorSrc.includes('--shot-w'),
+  'screenshot preview size must follow logical ow/oh, not the sampled PNG pixel size'
+);
+{
+  const mockSrc = fs.readFileSync(path.join(ROOT, 'ui', 'src', 'mock.ts'), 'utf8');
+  assert.ok(
+    mockSrc.includes('const firstSeenAt') && mockSrc.includes('summary(pagerId, nodes.length, firstSeenAt)'),
+    'mock deltas must keep a stable firstSeenAt, otherwise the panel treats each tick as a new pager and wipes the tree'
+  );
 }
 
 process.stdout.write('protocol-contract: ok\n');

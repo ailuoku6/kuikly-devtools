@@ -1,5 +1,5 @@
 import type { DevtoolsStore } from './store';
-import type { LogDto, NetworkDto, NodeDto } from './protocol';
+import type { LogDto, NativeCallDto, NetworkDto, NodeDto } from './protocol';
 
 /**
  * Feeds the store synthetic traffic so the panel can be developed without a device.
@@ -8,15 +8,16 @@ import type { LogDto, NetworkDto, NodeDto } from './protocol';
 export function startMock(store: DevtoolsStore): void {
   const pagerId = 'mock-1';
   const nodes = buildMockTree();
+  const firstSeenAt = Date.now();
 
   store.handle({
     type: 'hello',
-    sessions: [summary(pagerId, nodes.length)],
+    sessions: [summary(pagerId, nodes.length, firstSeenAt)],
   });
   store.handle({
     type: 'snapshot',
     session: {
-      ...summary(pagerId, nodes.length),
+      ...summary(pagerId, nodes.length, firstSeenAt),
       device: {
         platform: 'android',
         osVersion: '14',
@@ -31,13 +32,16 @@ export function startMock(store: DevtoolsStore): void {
       nodes,
       logs: [],
       network: [],
+      native: [],
       stateNodeIds: [],
     },
   });
 
   let logSeq = 0;
   let requestSeq = 0;
+  let nativeSeq = 0;
   const inFlight: NetworkDto[] = [];
+  const inFlightNative: NativeCallDto[] = [];
   let streamFrame = 0;
   const streamId = 'll_mock_1';
   let streamOpened = false;
@@ -51,6 +55,7 @@ export function startMock(store: DevtoolsStore): void {
 
     const logs: LogDto[] = Math.random() < 0.7 ? [mockLog(logSeq++)] : [];
     const network: NetworkDto[] = [];
+    const native: NativeCallDto[] = [];
 
     if (!streamOpened) {
       streamOpened = true;
@@ -116,21 +121,42 @@ export function startMock(store: DevtoolsStore): void {
       });
     }
 
+    if (Math.random() < 0.35) {
+      nativeSeq += 1;
+      const sample = mockNative(nativeSeq);
+      inFlightNative.push(sample);
+      native.push(sample);
+    }
+    if (inFlightNative.length > 0 && Math.random() < 0.55) {
+      const finished = inFlightNative.shift()!;
+      const ok = Math.random() < 0.9;
+      native.push({
+        ...finished,
+        ok,
+        cost: finished.sync ? 0 : Math.round(8 + Math.random() * 80),
+        rsp: finished.sync
+          ? undefined
+          : JSON.stringify({ code: ok ? 0 : 1, data: { favorite: true, seq: nativeSeq } }),
+        err: ok ? undefined : 'native module returned error',
+      });
+    }
+
     store.handle({
       type: 'delta',
       pagerId,
       full: false,
-      meta: summary(pagerId, nodes.length),
+      meta: summary(pagerId, nodes.length, firstSeenAt),
       device: null,
       nodes: touched,
       removed: [],
       logs,
       network,
+      native,
     });
   }, 300);
 }
 
-function summary(pagerId: string, nodeCount: number) {
+function summary(pagerId: string, nodeCount: number, firstSeenAt: number) {
   return {
     pagerId,
     page: 'DevToolsTestPage',
@@ -139,11 +165,51 @@ function summary(pagerId: string, nodeCount: number) {
     nodeCount,
     logCount: 0,
     networkCount: 0,
+    nativeCount: 0,
     droppedLogs: 0,
     sampleMs: 500,
     lastSeenAt: Date.now(),
-    firstSeenAt: Date.now(),
+    firstSeenAt,
     stale: false,
+  };
+}
+
+function mockNative(seq: number): NativeCallDto {
+  const samples: Array<Pick<NativeCallDto, 'mod' | 'method' | 'via' | 'sync' | 'args'>> = [
+    {
+      mod: 'CalendarModule',
+      method: 'getReminderList',
+      via: 'KuiklyTDFModule.asyncCall',
+      sync: false,
+      args: JSON.stringify({ busId: 'line-42', date: '2026-08-28' }),
+    },
+    {
+      mod: 'HRBridgeModule',
+      method: 'toast',
+      via: 'callModuleMethod',
+      sync: false,
+      args: JSON.stringify({ content: `mock toast #${seq}` }),
+    },
+    {
+      mod: 'TMKRStorageModule',
+      method: 'getItem',
+      via: 'KuiklyTDFModule.syncCall',
+      sync: true,
+      args: JSON.stringify({ key: 'item_detail_cache' }),
+    },
+    {
+      mod: 'NotifyModule',
+      method: 'postNotify',
+      via: 'callModuleMethod',
+      sync: false,
+      args: JSON.stringify({ event: 'itemDetail:ready', data: {} }),
+    },
+  ];
+  const sample = samples[seq % samples.length];
+  return {
+    id: `nc_mock_${seq}`,
+    ts: Date.now(),
+    ...sample,
   };
 }
 
@@ -183,12 +249,36 @@ function buildMockTree(): NodeDto[] {
   };
 
   const root = push(-1, 'DivView', 'DevToolsTestPage', { cv: true, f: [0, 0, 393, 852], lf: [0, 0] });
-  const preview = push(root, 'DivView', 'DevToolsPreviewView', { cv: true, f: [0, 0, 393, 360] });
+  const preview = push(root, 'DivView', 'DevToolsPreviewView', {
+    cv: true,
+    f: [0, 0, 393, 360],
+    p: {
+      padding: { top: 16, left: 16, bottom: 16, right: 16 },
+      flexDirection: 'COLUMN',
+      backgroundColor: '0xFFF5F5F5',
+    },
+  });
   push(preview, 'TextView', 'TextView', {
     f: [16, 16, 360, 24],
-    p: { text: 'DevTools fixture preview', color: '#FF1A1A1A', fontSize: 16 },
+    p: {
+      text: 'DevTools fixture preview',
+      color: '#FF1A1A1A',
+      fontSize: 16,
+      margin: { top: 8, left: 16, bottom: 8, right: 16 },
+      width: 360,
+      height: 24,
+    },
   });
-  const card = push(root, 'DivView', 'DevToolsTestCardView', { cv: true, f: [0, 420, 393, 432] });
+  const card = push(root, 'DivView', 'DevToolsTestCardView', {
+    cv: true,
+    f: [0, 420, 393, 432],
+    p: {
+      margin: 12,
+      padding: { top: 12, left: 16, bottom: 12, right: 16 },
+      flexDirection: 'COLUMN',
+      alignItems: 'CENTER',
+    },
+  });
 
   const dialog = push(card, 'DivView', 'DevToolsTestDialogView', {
     cv: true,

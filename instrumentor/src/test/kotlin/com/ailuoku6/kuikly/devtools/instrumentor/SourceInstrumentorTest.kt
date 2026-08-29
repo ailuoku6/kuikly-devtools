@@ -275,4 +275,26 @@ class SourceInstrumentorTest {
         // attachPager must come before the state dumper so a broken dumper cannot stop the attach.
         assertTrue(result.text.indexOf("attachPager") < result.text.indexOf("registerState"))
     }
+
+    // ----------------------------------------------------------- native calls stay untouched
+
+    @Test
+    fun `syncCall and toNative are not rewritten`() {
+        val source = """
+            fun read(module: KuiklyTDFModule, params: Any): Any? {
+                return module.syncCall("CalendarModule", "getReminderList", params)
+            }
+            fun encode(params: String): String {
+                return toNative(false, "urlEncode", params, null, true).toString()
+            }
+            fun ping(): Any {
+                return toNative(methodName = "ping", param = null, syncCall = true)
+            }
+            fun a(): String = syncToNativeMethod("m", data, null)
+        """.trimIndent()
+        val result = single(source)
+        assertFalse(result.changed)
+        assertEquals(source, result.text)
+        assertFalse(result.text.contains("traceSyncReturn"))
+    }
 }

@@ -146,7 +146,7 @@ internal class KDevtoolsTree(private val pager: Pager) {
         } catch (t: Throwable) {
             null
         }
-        json.put("p", attr?.let { KDevtoolsJson.objectOf(it.copyPropsMap()) } ?: JSONObject())
+        json.put("p", KDevtoolsJson.objectOf(collectViewProps(view, attr)))
 
         val hasOwnState = KDevtools.hasState(view)
         val hasAttrState = attr != null && KDevtools.hasState(attr)

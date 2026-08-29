@@ -9,7 +9,7 @@
       <--commands----
 ```
 
-设备只发**变更过的**节点。ingest 服务保存权威全量树、以及该页生命周期内的**全部日志和网络请求**，所以后连上来的浏览器也能拿到完整状态。日志和网络只在设备上报 `destroyed: true`（页面 `DESTROY_INSTANCE`）时删除。
+设备只发**变更过的**节点。ingest 服务保存权威全量树、以及该页生命周期内的**全部日志、网络请求和原生调用**，所以后连上来的浏览器也能拿到完整状态。日志、网络和原生调用只在设备上报 `destroyed: true`（页面 `DESTROY_INSTANCE`）时删除。
 
 ---
 
@@ -33,7 +33,8 @@ Content-Type: application/json
   "seq": 42,                   // 会话内单调递增
   "ts": 1755850000000,
   "full": false,               // true 表示接收方要先清空节点表
-  "destroyed": false,          // true：页面已销毁，服务端合并本包日志/网络后删除该会话
+  "destroyed": false,          // true：页面已销毁，服务端合并本包日志/网络/原生调用后删除该会话
+  "heartbeat": false,          // true：本包没有变化时的存活信号；与普通 ingest 共用通道
   "sampleMs": 500,
   "droppedLogs": 0,            // 上次上报以来设备环形缓冲区丢掉的日志条数
   "tree": {
@@ -44,12 +45,13 @@ Content-Type: application/json
   },
   "logs":    [ /* LogDto */ ],
   "network": [ /* NetworkDto */ ],
+  "native":  [ /* NativeCallDto */ ],
   "screenshot": { /* `shot` 或 live 循环完成后出现 */ },
   "device":  { /* 仅当 full === true 时出现 */ }
 }
 ```
 
-一个 tick 如果树没变、也没有待上报的截图，**不会因为刚多了一条日志就发出去**。日志和脏网络记录在设备侧先攒着，1500ms（或日志满 64 条 / 脏网络满 16 条）再打成一次 ingest；如果这个 tick 本来就要发树或截图，则顺带带上。完全空闲的页面零流量。
+一个 tick 如果树没变、也没有待上报的截图，**不会因为刚多了一条日志就发出去**。日志、脏网络记录和原生调用在设备侧先攒着，1500ms（或日志满 64 条 / 脏网络满 16 条 / 原生调用满 16 条）再打成一次 ingest；如果这个 tick 本来就要发树或截图，则顺带带上。完全空闲的页面最多 5 秒发送一个空心跳包，满足 8 秒内至少一次；服务端连续 10 秒未收到数据则认为页面已销毁并移除会话。
 
 ### Screenshot
 
@@ -86,7 +88,7 @@ Content-Type: application/json
 | `f` | `[x,y,w,h]` | **相对页面根节点**的**布局**坐标，由 `convertFrame(frame, null)` 计算。Kuikly 的 `convertFrame` **不计入** Scroller `contentOffset` 和 `transform` |
 | `lf` | `[x,y]` | 相对 dom 父节点的偏移 |
 | `so` | `[offsetX, offsetY]` | 仅 `ScrollerView`（含 List / WaterfallList）：当前 `curOffsetX/Y`。滚动时只脏这一条，避免整棵子树每帧重传 |
-| `p` | object | `attr.copyPropsMap()` |
+| `p` | object | `attr.copyPropsMap()` **加上** FlexNode 上的布局样式。`margin` / `padding` / `width` / `height` / `flex` / `flexDirection` 等只写在 FlexNode，不进 `propsMap` |
 | `hs` | bool | 该节点或其 attr 装了状态 dumper |
 | `s` | object | 插桩生成的成员变量，**仅面板展开的节点才有** |
 | `as` | object | 同上，对应该节点的 `ComposeAttr` |
@@ -126,15 +128,36 @@ HTTP 发两次：请求发起时一次，回包完成时再一次。服务端按
 
 HTTP 无需插桩：`KRNetworkModule.httpRequest`、Hippy/TDF `network.fetch`（含 `HttpService` / `httpGet` / `httpPost`，它们包成 `KuiklyTDFModule.asyncCall("network","fetch")`）、`TMNetworkModule.fetchMapServer`。
 
-长连接数据来源（与 kuiklyPoi 一致，无需插桩）：
+长连接数据来源（与常见 Kuikly 长连接集成一致，无需插桩）：
 
-- `KuiklyTDFModule.syncCall/asyncCall("TMLongLinkModule", subscribe\|observe\|unsubscribe)`，推送走 pager 事件（如 `poiDetail:longConnect`、`poiIndex:mcpLongConn_*`）
+- `KuiklyTDFModule.syncCall/asyncCall("TMLongLinkModule", subscribe\|observe\|unsubscribe)`，推送走 pager 事件（如 `itemDetail:longConnect`、`itemIndex:longConn_*`）
 - `TMKuiklyLongLinkModule`（QMLink）subscribe 的 keep-alive 回调
 - `TMKuiklyMQTTModule` publish / subscribe
 
 **完成时也会重发全部请求字段。** 接收方按 id 合并，并且拒绝用空值覆盖已知值——所以重发既便宜，又能保证一条已完成的记录不会变成"匿名行"（这个坑是实测时暴露出来的）。
 
 TDF 链路的请求会注册成功和失败两个回调。agent 把记录按成功回调 id 归档，同时记一条 `失败回调 id → 成功回调 id` 的别名，否则**失败的请求会永远停在 pending**，而那恰好是最需要看的情况。
+
+### NativeCallDto
+
+原生模块调用发两次：发起时一次，`FIRE_CALLBACK` 到达时再一次（无回调的同步/单向调用只发一次）。服务端按 `id` 合并。Keep-alive 回调（如 `NotifyModule.addNotify`）会把该行提升为 `kind: "stream"`，后续回调只发新增 `msgs`。
+
+HTTP / 长连接仍走 `network`，不会重复出现在 `native` 里。日志模块（`KRLogModule` 等）、HTTP / 长连接 / MQTT 相关模块（含 `network.getCookie`、`TMNetworkModule.cancel`、JCE 包装本身）以及每帧 `KRVsyncModule` 都会被跳过。
+
+| key | 含义 |
+| --- | --- |
+| `id` | 成功回调 id；没有回调时由 agent 生成 `nc_*` |
+| `mod` | 解包后的模块名（`KuiklyTDFModule.asyncCall("CalendarModule", …)` 记为 `CalendarModule`） |
+| `method` | 方法名 |
+| `via` | 通道：`KuiklyTDFModule.asyncCall` / `callModuleMethod` / `callTDFModuleMethod` 等 |
+| `sync` | 是否同步调用 |
+| `args` | 入参（字符串） |
+| `ts` | 发起时间戳 |
+| `cost` / `ok` / `rsp` / `err` | 完成时出现。同步调用的立即返回值通过拦截 `NativeBridge.toNative` 采集；若尚未插桩成功，`sync && !rsp` 表示只采到了入参 |
+| `kind` | `stream` 表示 keep-alive 多次回调 |
+| `msgs` / `frames` | 与 NetworkDto 相同，仅 keep-alive |
+
+**完成时也会重发模块名、方法名和入参。** 合并规则与 NetworkDto 相同。
 
 ---
 
@@ -151,7 +174,7 @@ TDF 链路的请求会注册成功和失败两个回调。agent 把记录按成�
 | `full` | | 下一个 tick 发全量节点 |
 | `state` | `ids: [int]` | 只为这些节点 dump 成员变量 |
 | `sample` | `value: int` | 改采样间隔（限制在 100~5000ms） |
-| `clear` | | 丢弃已缓冲的日志和网络记录 |
+| `clear` | | 丢弃已缓冲的日志、网络记录和原生调用 |
 | `shot` | `id?: int`，`sample?: int` | 整页（省略 `id` 或 `<= 0`）或指定节点走 `toImage` 截图 |
 | `live` | `on: bool`，`interval?: int`，`sample?: int` | 树有变化时才整页截图（默认 2000ms，sample 4） |
 
@@ -187,7 +210,7 @@ WebSocket：`ws://localhost:<panelPort>/ws`
 
 `v` 字段是协议版本。Kotlin agent 与 TS 面板是两套独立代码，只靠字段名约定对齐，所以仓库里有一个契约测试（`test/protocol-contract.js`）直接从 Kotlin 源码里抓 `put("...")` 的 key 与 TS 类型比对。改协议时：
 
-1. 改 Kotlin 侧（`KDevtoolsSession.kt` / `KDevtoolsTree.kt` / `KDevtoolsLog.kt`）
+1. 改 Kotlin 侧（`KDevtoolsSession.kt` / `KDevtoolsTree.kt` / `KDevtoolsLog.kt` / `KDevtoolsNative.kt`）
 2. 改 `ui/src/protocol.ts`
 3. 更新 `test/protocol-contract.js` 里的期望字段集
 4. 同步本文档和 [PROTOCOL.md](PROTOCOL.md)

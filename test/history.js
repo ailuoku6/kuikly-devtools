@@ -11,7 +11,7 @@ const assert = require('assert');
 const http = require('http');
 const WebSocket = require('ws');
 
-const { startServers, INGEST_PATH } = require('../src/index');
+const { Hub, startServers, INGEST_PATH } = require('../src/index');
 
 const INGEST_PORT = 18940;
 const PANEL_PORT = 18941;
@@ -114,11 +114,43 @@ function envelope(over = {}) {
     tree: { nodes: [], removed: [], total: 0, changed: 0 },
     logs: [],
     network: [],
+    native: [],
     ...over,
   };
 }
 
 async function run() {
+  // Silent-page watchdog: no real 10 s wait needed; age the last heartbeat and run the sweep.
+  const watchdog = new Hub();
+  const watchdogRemoved = [];
+  watchdog.on('session-removed', (event) => watchdogRemoved.push(event.pagerId));
+  watchdog.ingest({
+    pagerId: 'watchdog-page', sid: 'watchdog-sid', full: true, seq: 0,
+    tree: { nodes: [], removed: [], total: 0, changed: 0 }, logs: [], network: [], native: [],
+  });
+  const watchdogSession = watchdog.sessions.get('watchdog-page');
+  const deltas = [];
+  watchdog.on('delta', (delta) => deltas.push(delta));
+  watchdog.enqueueCommand('watchdog-page', { type: 'full' });
+  const heartbeat = watchdog.ingest({ pagerId: 'watchdog-page', sid: 'watchdog-sid', seq: 1, heartbeat: true });
+  assert.deepStrictEqual(heartbeat.commands, [{ type: 'full' }], 'heartbeat must poll queued commands');
+  assert.strictEqual(deltas.length, 0, 'heartbeat must not emit a blank panel delta');
+  watchdogSession.lastSeenAt = Date.now() - 10001;
+  watchdog.pruneTombstones();
+  assert.deepStrictEqual(watchdogRemoved, ['watchdog-page']);
+  assert.strictEqual(watchdog.sessions.has('watchdog-page'), false);
+  assert.deepStrictEqual(
+    watchdog.ingest({ pagerId: 'watchdog-page', sid: 'watchdog-sid', seq: 2, heartbeat: true }).commands,
+    [],
+    'late heartbeat from an expired sid must be ignored'
+  );
+  watchdog.ingest({
+    pagerId: 'watchdog-page', sid: 'watchdog-sid-2', full: true, seq: 0,
+    tree: { nodes: [], removed: [], total: 0, changed: 0 }, logs: [], network: [], native: [],
+  });
+  assert.strictEqual(watchdog.sessions.get('watchdog-page').sid, 'watchdog-sid-2');
+  watchdog.close();
+
   const servers = await startServers({ ingestPort: INGEST_PORT, panelPort: PANEL_PORT });
 
   // --- archive is recorded even with no browser connected -------------------
@@ -152,6 +184,47 @@ async function run() {
   assert.strictEqual(rest.body.network.length, 1);
   assert.strictEqual(rest.body.network[0].url, 'https://example.com/a');
   assert.strictEqual(rest.body.network[0].status, 200);
+
+  await post(INGEST_PORT, INGEST_PATH, envelope({
+    seq: 1.5,
+    native: [{
+      id: 'nc_1',
+      mod: 'CalendarModule',
+      method: 'getReminderList',
+      via: 'KuiklyTDFModule.asyncCall',
+      sync: false,
+      args: '{"busId":"42"}',
+      ts: 4,
+    }],
+  }));
+  await post(INGEST_PORT, INGEST_PATH, envelope({
+    seq: 1.6,
+    native: [{ id: 'nc_1', ok: true, cost: 12, rsp: '{"code":0}' }],
+  }));
+  assert.strictEqual(servers.hub.sessions.get('9').nativeOrder.length, 1);
+  assert.strictEqual(servers.hub.sessions.get('9').native.get('nc_1').mod, 'CalendarModule');
+  assert.strictEqual(servers.hub.sessions.get('9').native.get('nc_1').ok, true);
+  assert.strictEqual(servers.hub.sessions.get('9').native.get('nc_1').args, '{"busId":"42"}');
+
+  await post(INGEST_PORT, INGEST_PATH, envelope({
+    seq: 1.7,
+    native: [
+      { id: 'nc_log', mod: 'KRLogModule', method: 'logInfo', via: 'callModuleMethod', sync: true, args: 'hi', ts: 5 },
+      { id: 'nc_http', mod: 'network', method: 'getCookie', via: 'KuiklyTDFModule.asyncCall', sync: false, args: '{}', ts: 5 },
+      { id: 'nc_map', mod: 'TMNetworkModule', method: 'cancel', via: 'KuiklyTDFModule.asyncCall', sync: false, args: '{}', ts: 5 },
+      { id: 'nc_jce', mod: 'TMKuiklyJCENetworkModule', method: 'asyncCallWithBinary', via: 'callModuleMethod', sync: false, args: '[]', ts: 5 },
+    ],
+  }));
+  await post(INGEST_PORT, INGEST_PATH, envelope({
+    seq: 1.71,
+    native: [{ id: 'nc_http', ok: true, cost: 3, rsp: '{}' }],
+  }));
+  assert.strictEqual(servers.hub.sessions.get('9').nativeOrder.length, 1);
+  assert.strictEqual(servers.hub.sessions.get('9').native.get('nc_1').mod, 'CalendarModule');
+  assert.ok(!servers.hub.sessions.get('9').native.has('nc_log'));
+  assert.ok(!servers.hub.sessions.get('9').native.has('nc_http'));
+  assert.ok(!servers.hub.sessions.get('9').native.has('nc_map'));
+  assert.ok(!servers.hub.sessions.get('9').native.has('nc_jce'));
 
   // Duplicate seqs from a destroy-vs-inflight race must not double-count.
   await post(INGEST_PORT, INGEST_PATH, envelope({
@@ -226,11 +299,11 @@ async function run() {
     seq: 1,
     network: [{
       id: 'll_1',
-      url: 'longlink://cmd/270532608?event=poiDetail:longConnect',
+      url: 'longlink://cmd/42?event=itemDetail:longConnect',
       method: 'SUB',
       stack: 'TDF/TMLongLinkModule',
       kind: 'stream',
-      req: '{"cmd":270532608,"eventName":"poiDetail:longConnect"}',
+      req: '{"cmd":42,"eventName":"itemDetail:longConnect"}',
       ts: Date.now(),
       msgs: [{ seq: 0, dir: 'down', ts: Date.now(), data: '{"batch":1}' }],
       frames: 1,
@@ -249,7 +322,7 @@ async function run() {
   assert.strictEqual(stream.kind, 'stream');
   assert.strictEqual(stream.msgs.length, 2, 'server must keep every long-link frame');
   assert.strictEqual(stream.msgs[1].data, '{"batch":2}');
-  assert.strictEqual(stream.url, 'longlink://cmd/270532608?event=poiDetail:longConnect');
+  assert.strictEqual(stream.url, 'longlink://cmd/42?event=itemDetail:longConnect');
 
   // Chunked HTTP bodies reassemble in ingest order, including when chunks arrive on later POSTs.
   const big = 'N'.repeat(200000);

@@ -6,7 +6,11 @@ const { SERVE_PATH_MARKER } = require('./ingest');
 
 const MAX_LOGS = 20000;
 const MAX_NETWORK = 2000;
-const STALE_AFTER_MS = 15000;
+const MAX_NATIVE = 2000;
+// The device heartbeat is sent at least every 8 s. Expire a page after 10 s without any
+// ingest packet (heartbeat or regular data), leaving a small delivery margin.
+const STALE_AFTER_MS = 10000;
+const STALE_SWEEP_MS = 500;
 const TOMBSTONE_TTL_MS = 60 * 1000;
 const MAX_FRAMES = 500;
 /** After `destroyed`, keep the session until body chunks finish (or this elapses). */
@@ -37,6 +41,8 @@ class Session {
     this.logSeqs = new Set();
     this.network = new Map();
     this.networkOrder = [];
+    this.native = new Map();
+    this.nativeOrder = [];
     this.bodyBuf = new Map();
 
     this.droppedLogs = 0;
@@ -48,7 +54,7 @@ class Session {
   }
 
   get stale() {
-    return Date.now() - this.lastSeenAt > STALE_AFTER_MS;
+    return Date.now() - this.lastSeenAt >= STALE_AFTER_MS;
   }
 
   summary() {
@@ -60,6 +66,7 @@ class Session {
       nodeCount: this.nodes.size,
       logCount: this.logs.length,
       networkCount: this.networkOrder.length,
+      nativeCount: visibleNative(this).length,
       droppedLogs: this.droppedLogs,
       sampleMs: this.sampleMs,
       lastSeenAt: this.lastSeenAt,
@@ -75,6 +82,7 @@ class Session {
       nodes: Array.from(this.nodes.values()),
       logs: this.logs,
       network: this.networkOrder.map((id) => this.network.get(id)).filter(Boolean),
+      native: visibleNative(this),
       stateNodeIds: this.stateNodeIds,
       screenshot: this.screenshot,
     };
@@ -135,6 +143,10 @@ function bodyIncomplete(record) {
       (typeof record.req !== 'string' || record.req.length < record.reqChars)) {
     return true;
   }
+  if (typeof record.argsChars === 'number' && record.argsChars > 0 &&
+      (typeof record.args !== 'string' || record.args.length < record.argsChars)) {
+    return true;
+  }
   return false;
 }
 
@@ -142,6 +154,11 @@ function bodiesPending(session) {
   if (session.bodyBuf && session.bodyBuf.size > 0) return true;
   for (const rec of session.network.values()) {
     if (bodyIncomplete(rec)) return true;
+  }
+  if (session.native) {
+    for (const rec of session.native.values()) {
+      if (bodyIncomplete(rec)) return true;
+    }
   }
   return false;
 }
@@ -155,6 +172,14 @@ class Hub extends EventEmitter {
     this.deadSids = new Map();
     /** pagerId → timestamp, fallback when the dying payload had no `sid`. */
     this.pagerTombs = new Map();
+    // Keep cleanup independent of incoming traffic so a page that disappears silently is removed
+    // from the panel. `unref` lets short-lived CLI commands exit without waiting for this timer.
+    this.staleSweep = setInterval(() => this.pruneTombstones(), STALE_SWEEP_MS);
+    this.staleSweep.unref?.();
+  }
+
+  close() {
+    clearInterval(this.staleSweep);
   }
 
   session(pagerId) {
@@ -209,10 +234,19 @@ class Hub extends EventEmitter {
     const session = this.session(pagerId);
     if (sid) session.sid = sid;
 
-    const { changedNodes, removed, logs, network } = this.applyPayload(session, payload);
+    const { changedNodes, removed, logs, network, native } = this.applyPayload(session, payload);
 
     const commands = session.pendingCommands;
     session.pendingCommands = [];
+
+    // A purpose-built idle heartbeat affects only liveness and command polling. Do not wake every
+    // connected panel with a blank delta every eight seconds.
+    if (payload.heartbeat === true &&
+        changedNodes.length === 0 && removed.length === 0 && logs.length === 0 &&
+        network.length === 0 && native.length === 0 && !payload.screenshot &&
+        !(Array.isArray(payload.blobs) && payload.blobs.length)) {
+      return { commands };
+    }
 
     const delta = {
       type: 'delta',
@@ -224,6 +258,7 @@ class Hub extends EventEmitter {
       removed,
       logs,
       network: network.map((record) => slimForDelta(session.network.get(record.id))).filter(Boolean),
+      native: native.map((record) => slimForDelta(session.native.get(record.id))).filter(Boolean),
     };
     if (payload.screenshot) delta.screenshot = payload.screenshot;
     if (Array.isArray(payload.blobs) && payload.blobs.length) delta.blobs = payload.blobs;
@@ -247,6 +282,7 @@ class Hub extends EventEmitter {
     }
     const hasArchive = (Array.isArray(payload.logs) && payload.logs.length) ||
       (Array.isArray(payload.network) && payload.network.length) ||
+      (Array.isArray(payload.native) && payload.native.length) ||
       (Array.isArray(payload.blobs) && payload.blobs.length);
     if (!session && hasArchive) {
       session = this.session(pagerId);
@@ -278,6 +314,7 @@ class Hub extends EventEmitter {
 
   emitArchiveDelta(session, pagerId, payload) {
     const network = Array.isArray(payload.network) ? payload.network : [];
+    const native = Array.isArray(payload.native) ? payload.native : [];
     const logs = Array.isArray(payload.logs) ? payload.logs : [];
     const delta = {
       type: 'delta',
@@ -289,6 +326,7 @@ class Hub extends EventEmitter {
       removed: [],
       logs,
       network: network.map((record) => slimForDelta(session.network.get(record.id))).filter(Boolean),
+      native: native.map((record) => slimForDelta(session.native.get(record.id))).filter(Boolean),
     };
     if (Array.isArray(payload.blobs) && payload.blobs.length) delta.blobs = payload.blobs;
     this.emit('delta', delta);
@@ -319,7 +357,7 @@ class Hub extends EventEmitter {
 
     const logs = this.applyLogsAndNetwork(session, payload);
     if (payload.screenshot) session.screenshot = payload.screenshot;
-    return { changedNodes, removed, logs: logs.logs, network: logs.network };
+    return { changedNodes, removed, logs: logs.logs, network: logs.network, native: logs.native };
   }
 
   applyLogsAndNetwork(session, payload) {
@@ -354,9 +392,32 @@ class Hub extends EventEmitter {
       session.network.set(record.id, mergeRecord(session.network.get(record.id), record));
     }
 
+    const native = Array.isArray(payload.native) ? payload.native : [];
+    if (!session.native) {
+      session.native = new Map();
+      session.nativeOrder = [];
+    }
+    for (const record of native) {
+      if (!record || record.id == null) continue;
+      // Console / Network already own these modules; keep Native Calls for everything else.
+      if (isLogOrNetworkNative(record.mod)) continue;
+      if (!session.native.has(record.id)) {
+        // A completion tick often omits `mod`. If we never stored the invoke (log/HTTP skip),
+        // do not create an anonymous Native Calls row from the callback.
+        if (!record.mod) continue;
+        session.nativeOrder.push(record.id);
+        if (session.nativeOrder.length > MAX_NATIVE) {
+          const evicted = session.nativeOrder.shift();
+          session.native.delete(evicted);
+          dropBodyBuf(session, evicted);
+        }
+      }
+      session.native.set(record.id, mergeRecord(session.native.get(record.id), record));
+    }
+
     applyBlobs(session, payload.blobs);
 
-    return { logs, network };
+    return { logs, network, native };
   }
 
   pruneTombstones() {
@@ -369,6 +430,12 @@ class Hub extends EventEmitter {
     }
     for (const session of Array.from(this.sessions.values())) {
       if (session.closing && now - session.closingAt > CLOSE_DRAIN_MS) {
+        this.dropSession(session.pagerId);
+      } else if (!session.closing && session.lastSeenAt > 0 && now - session.lastSeenAt >= STALE_AFTER_MS) {
+        // Treat a silent page like an implicit DESTROY_INSTANCE. Keep tombstones so a late packet
+        // from the dead generation cannot resurrect its archive or mix with a recycled pagerId.
+        if (session.sid) this.deadSids.set(session.sid, now);
+        else this.pagerTombs.set(session.pagerId, now);
         this.dropSession(session.pagerId);
       }
     }
@@ -398,4 +465,50 @@ class Hub extends EventEmitter {
   }
 }
 
-module.exports = { Hub, Session, mergeRecord, MAX_LOGS, MAX_NETWORK };
+/**
+ * Keep aligned with `KDevtoolsBridgeTap.isLogOrNetworkNativeModule`. Older agents may still
+ * upload log/HTTP/long-link rows in `native`; drop them so the panel does not duplicate Console
+ * and Network.
+ */
+function isLogOrNetworkNative(mod) {
+  if (!mod) return false;
+  const name = String(mod);
+  if (
+    name === 'KRLogModule' ||
+    name === 'KRNetworkModule' ||
+    name === 'KRVsyncModule' ||
+    name === 'network' ||
+    name === 'TMNetworkModule' ||
+    name === 'TMLongLinkModule' ||
+    name === 'TMKuiklyLongLinkModule' ||
+    name === 'TMKuiklyMQTTModule' ||
+    name === 'TMKuiklyJCENetworkModule'
+  ) {
+    return true;
+  }
+  const lower = name.toLowerCase();
+  return (
+    lower.includes('logmodule') ||
+    lower.includes('networkmodule') ||
+    lower.includes('longlink') ||
+    lower.includes('mqtt')
+  );
+}
+
+function visibleNative(session) {
+  if (!session || !session.nativeOrder || !session.native) return [];
+  return session.nativeOrder
+    .map((id) => session.native.get(id))
+    .filter((record) => record && !isLogOrNetworkNative(record.mod));
+}
+
+module.exports = {
+  Hub,
+  Session,
+  mergeRecord,
+  isLogOrNetworkNative,
+  visibleNative,
+  MAX_LOGS,
+  MAX_NETWORK,
+  MAX_NATIVE,
+};

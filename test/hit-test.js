@@ -457,7 +457,7 @@ assert.strictEqual(
 );
 
 // Nested scroller + virtual list rows covering the page + later FAB overlay.
-// RouteDetail-style: inner list `so` pulls the content column over the FAB pixel;
+// ItemDetail-style: inner list `so` pulls the content column over the FAB pixel;
 // virtual (r=false) rows must not make that column a painted hit.
 const nestedOverlay = new Map([
   [1, { id: 1, pid: -1, ci: 0, n: 'Page', c: 'Page', r: true, f: [0, 0, 393, 886] }],
@@ -465,7 +465,7 @@ const nestedOverlay = new Map([
   [30, { id: 30, pid: 2, ci: 3, n: 'Card', c: 'TouchControl', r: true, f: [0, 0, 393, 886] }],
   [37, { id: 37, pid: 30, ci: 0, n: 'Scroller', c: 'ScrollerView', r: true, f: [0, 0, 393, 886], so: [0, 638], p: { overflow: 1 } }],
   [54, { id: 54, pid: 37, ci: 0, n: 'List', c: 'WaterfallListView', r: true, f: [0, 687, 393, 837], so: [0, 266], p: { overflow: 1 } }],
-  [721, { id: 721, pid: 54, ci: 0, n: 'Content', c: 'RouteDetailContent', r: true, cv: true, f: [0, 903, 393, 888] }],
+  [721, { id: 721, pid: 54, ci: 0, n: 'Content', c: 'ItemDetailContent', r: true, cv: true, f: [0, 903, 393, 888] }],
   [722, { id: 722, pid: 721, ci: 0, n: 'Col', c: 'DivView', r: true, f: [0, 903, 393, 888] }],
   [875, { id: 875, pid: 722, ci: 10, n: 'Row', c: 'DivView', r: false, f: [0, 1612, 393, 83] }],
   [881, { id: 881, pid: 875, ci: 0, n: 'Stop', c: 'TextView', r: true, f: [54, 1612, 72, 21] }],
@@ -479,12 +479,12 @@ const nestedOverlay = new Map([
 assert.strictEqual(
   hitTestNode(nestedOverlay, 357, 766).c,
   'ImageView',
-  'FAB icon wins over a scrolled RouteDetailContent column that visually covers the same pixel'
+  'FAB icon wins over a scrolled ItemDetailContent column that visually covers the same pixel'
 );
 assert.strictEqual(
   hitTestNode(nestedOverlay, 340, 750).n,
   'Fab',
-  'FAB padding (not the 20px icon) still wins over RouteDetailContent'
+  'FAB padding (not the 20px icon) still wins over ItemDetailContent'
 );
 assert.strictEqual(
   hitTestNode(nestedOverlay, 200, 830).n,

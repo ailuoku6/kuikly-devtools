@@ -5,12 +5,18 @@ import type { NodeDto, ScreenshotDto } from '../protocol';
 import { LIVE_SHOT_INTERVAL_MS, LIVE_SHOT_SAMPLE } from '../protocol';
 import { hitTestNode, overlayBox, pathTo, visualFrame } from '../tree';
 
-interface Props {
+interface InspectorProps {
   node: NodeDto | null;
   nodes: Map<number, NodeDto>;
   stateRequested: boolean;
-  screenshot: ScreenshotDto | null;
   onRequestState: () => void;
+  onSelect: (id: number) => void;
+}
+
+interface ScreenshotProps {
+  node: NodeDto | null;
+  nodes: Map<number, NodeDto>;
+  screenshot: ScreenshotDto | null;
   onSelect: (id: number) => void;
   onCapture: (id: number, sample: number) => void;
   onLive: (on: boolean, sample: number) => void;
@@ -20,22 +26,11 @@ export function Inspector({
   node,
   nodes,
   stateRequested,
-  screenshot,
   onRequestState,
   onSelect,
-  onCapture,
-  onLive,
-}: Props) {
+}: InspectorProps) {
   return (
     <div className="scroll">
-      <ScreenshotSection
-        node={node}
-        nodes={nodes}
-        screenshot={screenshot}
-        onSelect={onSelect}
-        onCapture={onCapture}
-        onLive={onLive}
-      />
       {node ? (
         <NodeInspector
           node={node}
@@ -51,21 +46,17 @@ export function Inspector({
   );
 }
 
-function ScreenshotSection({
+const FALLBACK_SHOT_W = 393;
+const FALLBACK_SHOT_H = 852;
+
+export function ScreenshotPane({
   node,
   nodes,
   screenshot,
   onSelect,
   onCapture,
   onLive,
-}: {
-  node: NodeDto | null;
-  nodes: Map<number, NodeDto>;
-  screenshot: ScreenshotDto | null;
-  onSelect: (id: number) => void;
-  onCapture: (id: number, sample: number) => void;
-  onLive: (on: boolean, sample: number) => void;
-}) {
+}: ScreenshotProps) {
   const [sample, setSample] = useState(LIVE_SHOT_SAMPLE);
   const [live, setLive] = useState(true);
   const [waiting, setWaiting] = useState(false);
@@ -124,21 +115,15 @@ function ScreenshotSection({
   const originW = screenshot?.ow ?? 0;
   const originH = screenshot?.oh ?? 0;
   const canPick = originW > 0 && originH > 0 && nodes.size > 0;
+  const fitW = originW > 0 ? originW : FALLBACK_SHOT_W;
+  const fitH = originH > 0 ? originH : FALLBACK_SHOT_H;
 
   const pickAt = (event: MouseEvent<HTMLDivElement>) => {
     if (!canPick || !screenshot) return null;
-    const img = event.currentTarget.querySelector('img');
-    const box = img?.getBoundingClientRect() ?? event.currentTarget.getBoundingClientRect();
-    const style = img ? window.getComputedStyle(img) : null;
-    const padL = style ? parseFloat(style.borderLeftWidth) || 0 : 0;
-    const padT = style ? parseFloat(style.borderTopWidth) || 0 : 0;
-    const padR = style ? parseFloat(style.borderRightWidth) || 0 : 0;
-    const padB = style ? parseFloat(style.borderBottomWidth) || 0 : 0;
-    const contentW = box.width - padL - padR;
-    const contentH = box.height - padT - padB;
-    if (contentW <= 0 || contentH <= 0) return null;
-    const fx = (event.clientX - box.left - padL) / contentW;
-    const fy = (event.clientY - box.top - padT) / contentH;
+    const box = event.currentTarget.getBoundingClientRect();
+    if (box.width <= 0 || box.height <= 0) return null;
+    const fx = (event.clientX - box.left) / box.width;
+    const fy = (event.clientY - box.top) / box.height;
     if (fx < 0 || fy < 0 || fx > 1 || fy > 1) return null;
     const x = (screenshot.ox ?? 0) + fx * originW;
     const y = (screenshot.oy ?? 0) + fy * originH;
@@ -153,9 +138,14 @@ function ScreenshotSection({
     ? overlayBox(node, screenshot?.ox ?? 0, screenshot?.oy ?? 0, originW, originH, nodes)
     : null;
 
+  const waitingHint = live
+    ? liveArmed
+      ? `树变化时更新，最快每 ${LIVE_SHOT_INTERVAL_MS / 1000}s 一次。正在等待首帧…`
+      : '实时截图已暂停（标签页或预览不可见）。'
+    : '开启实时，或手动截取一次。';
+
   return (
-    <Section title="截图" defaultOpen>
-      <div ref={previewRef}>
+    <div className="split-shot">
       <div className="shot-toolbar">
         <button
           className={live ? 'active' : ''}
@@ -200,10 +190,16 @@ function ScreenshotSection({
         </span>
       </div>
       {screenshot?.err && <div className="shot-err">{screenshot.err}</div>}
-      {screenshot?.data ? (
-        <div className="shot-preview">
+      <div ref={previewRef} className="shot-stage">
+        {screenshot?.data ? (
           <div
-            className={`shot-stage${canPick ? ' pickable' : ''}`}
+            className={`shot-fit${canPick ? ' pickable' : ''}`}
+            style={
+              {
+                '--shot-w': fitW,
+                '--shot-h': fitH,
+              } as CSSProperties
+            }
             onMouseMove={(event) => {
               const hit = pickAt(event);
               setHoverId(hit?.id ?? null);
@@ -220,26 +216,18 @@ function ScreenshotSection({
               <div className="shot-box hover" style={boxStyle(hoverBox)} />
             )}
           </div>
-          <div className="shot-meta">
-            {screenshot.live ? '实时 · ' : ''}
-            nativeRef {screenshot.id} · 采样 {screenshot.sample}
-            {canPick ? ' · 点击可选中节点' : ''}
-            {hover ? ` · ${hover.c} #${hover.id}` : ''}
-          </div>
-        </div>
-      ) : (
-        !screenshot?.err && (
-          <div className="empty" style={{ padding: '12px 10px' }}>
-            {live
-              ? liveArmed
-                ? `实时截图：树变化时更新，最快每 ${LIVE_SHOT_INTERVAL_MS / 1000}s 一次。正在等待首帧…`
-                : '实时截图已暂停（标签页或预览不可见）。'
-              : '基于 DeclarativeBaseView.toImage。可开启实时，或手动截取一次。'}
-          </div>
-        )
-      )}
+        ) : (
+          !screenshot?.err && <div className="shot-placeholder">{waitingHint}</div>
+        )}
       </div>
-    </Section>
+      <div className="shot-meta">
+        {screenshot?.data
+          ? `${screenshot.live ? '实时 · ' : ''}nativeRef ${screenshot.id} · 采样 ${screenshot.sample}${
+              canPick ? ' · 点击可选中节点' : ''
+            }${hover ? ` · ${hover.c} #${hover.id}` : ''}`
+          : '预览尺寸固定，采样只影响清晰度'}
+      </div>
+    </div>
   );
 }
 
@@ -377,20 +365,72 @@ function roundVisual(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+type BoxSides = { top: number; right: number; bottom: number; left: number };
+
 function BoxModel({ node }: { node: NodeDto }) {
   const [x, y, w, h] = node.f ?? [0, 0, 0, 0];
+  const margin = boxSides(node.p?.margin);
+  const padding = boxSides(node.p?.padding);
   return (
     <div className="box-model">
-      <div className="outer">
-        <span className="corner tl">
-          {x}, {y}
-        </span>
-        <div className="inner">
-          {w} × {h}
-        </div>
-      </div>
+      <BoxRing kind="margin" sides={margin}>
+        <BoxRing kind="padding" sides={padding}>
+          <div className="box-content">
+            <span className="box-label">content</span>
+            <div className="box-size">
+              {w} × {h}
+            </div>
+            <div className="box-origin">
+              {x}, {y}
+            </div>
+          </div>
+        </BoxRing>
+      </BoxRing>
     </div>
   );
+}
+
+function BoxRing({
+  kind,
+  sides,
+  children,
+}: {
+  kind: string;
+  sides: BoxSides;
+  children: ReactNode;
+}) {
+  return (
+    <div className={`box-ring ${kind}`}>
+      <span className="box-label">{kind}</span>
+      <span className="box-side top">{formatBoxNum(sides.top)}</span>
+      <span className="box-side right">{formatBoxNum(sides.right)}</span>
+      <span className="box-side bottom">{formatBoxNum(sides.bottom)}</span>
+      <span className="box-side left">{formatBoxNum(sides.left)}</span>
+      <div className="box-ring-inner">{children}</div>
+    </div>
+  );
+}
+
+/** Agent emits a number for `margin(10f)` and `{top,left,bottom,right}` for mixed sides. */
+function boxSides(value: unknown): BoxSides {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return { top: value, right: value, bottom: value, left: value };
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const num = (key: string) => {
+      const item = record[key];
+      return typeof item === 'number' && Number.isFinite(item) ? item : 0;
+    };
+    return { top: num('top'), right: num('right'), bottom: num('bottom'), left: num('left') };
+  }
+  return { top: 0, right: 0, bottom: 0, left: 0 };
+}
+
+function formatBoxNum(value: number): string {
+  if (value === 0) return '0';
+  const rounded = Math.round(value * 100) / 100;
+  return String(rounded);
 }
 
 function KeyValues({ values, emptyLabel }: { values?: Record<string, unknown>; emptyLabel: string }) {
@@ -500,7 +540,10 @@ function format(key: string, value: unknown): string {
   if (value === null || value === undefined) return 'null';
   if (typeof value === 'object') {
     try {
-      return JSON.stringify(sortedJson(value), null, 2);
+      const sorted = sortedJson(value);
+      const compact = JSON.stringify(sorted);
+      if (compact.length <= FOLD_CHARS) return compact;
+      return JSON.stringify(sorted, null, 2);
     } catch {
       return String(value);
     }

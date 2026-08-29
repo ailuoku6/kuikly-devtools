@@ -142,6 +142,15 @@ async function run() {
         ts: Date.now(),
       },
     ],
+    native: [{
+      id: 'nc_1',
+      mod: 'HRBridgeModule',
+      method: 'toast',
+      via: 'callModuleMethod',
+      sync: false,
+      args: '{"content":"hi"}',
+      ts: Date.now(),
+    }],
     device: { platform: 'android', density: 3 },
   });
   assert.strictEqual(response.status, 200);
@@ -153,6 +162,8 @@ async function run() {
   assert.strictEqual(session.nodes.size, 2);
   assert.strictEqual(session.logs.length, 1);
   assert.strictEqual(session.networkOrder.length, 1);
+  assert.strictEqual(session.nativeOrder.length, 1);
+  assert.strictEqual(session.native.get('nc_1').mod, 'HRBridgeModule');
   assert.strictEqual(session.network.get('cb_1').status, undefined);
 
   // --- delta: one node changes, one disappears, request completes ----------

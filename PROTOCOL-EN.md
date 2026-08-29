@@ -10,9 +10,9 @@ device  --HTTP POST-->  ingest server (:8089)  --WebSocket-->  browser panel (:8
 ```
 
 The device only ever sends **changed** nodes. The ingest server keeps the authoritative full tree
-**and an append-only archive of every log and network record** so a browser that connects late still
-gets a complete picture. That archive is deleted only when the device reports `destroyed: true`
-(the pager received `DESTROY_INSTANCE`).
+**and an append-only archive of every log, network record and native module call** so a browser that
+connects late still gets a complete picture. That archive is deleted only when the device reports
+`destroyed: true` (the pager received `DESTROY_INSTANCE`).
 
 ## 1. Device to server
 
@@ -35,7 +35,8 @@ full path against the raw bridge params string is unreliable.
   "seq": 42,                   // monotonic per session
   "ts": 1755850000000,
   "full": false,               // true => receiver must clear its node map first
-  "destroyed": false,          // true => merge this packet's logs/network, then drop the session
+  "destroyed": false,          // true => merge this packet's logs/network/native, then drop the session
+  "heartbeat": false,          // true => an otherwise empty liveness packet on the same ingest route
   "sampleMs": 500,
   "droppedLogs": 0,            // logs dropped by the device ring buffer since last tick
   "tree": {
@@ -46,15 +47,17 @@ full path against the raw bridge params string is unreliable.
   },
   "logs":    [ /* LogDto */ ],
   "network": [ /* NetworkDto */ ],
+  "native":  [ /* NativeCallDto */ ],
   "screenshot": { /* present after a `shot` command or a live frame */ },
   "device":  { /* only present when full === true */ }
 }
 ```
 
-A tick with no tree changes and no pending screenshot is **not sent**, even if logs or network
-records are sitting in the buffer. Those are held for 1500 ms (or until 64 logs / 16 dirty
-network records) and then flushed as one ingest. A tree delta or screenshot still takes them
-along immediately. A fully idle page costs zero traffic.
+A tick with no tree changes and no pending screenshot is **not sent**, even if logs, network or
+native-call records are sitting in the buffer. Those are held for 1500 ms (or until 64 logs / 16
+dirty network records / 16 native calls) and then flushed as one ingest. A tree delta or screenshot
+still takes them along immediately. An otherwise idle page sends an empty heartbeat at least every 5 seconds,
+the server removes a session after 10 seconds without any packet.
 
 ### Screenshot
 
@@ -95,7 +98,7 @@ Keys are short because a full snapshot of a busy page carries thousands of them.
 | `f`  | `[x,y,w,h]` | **layout** frame in page-root coordinates, via `convertFrame(frame, null)` (ignores scroll/transform) |
 | `lf` | `[x,y]`   | offset within the dom parent |
 | `so` | `[offsetX, offsetY]` | `ScrollerView.curOffsetX/Y` only. A scroll dirties this one node instead of every descendant |
-| `p`  | object    | `attr.copyPropsMap()` |
+| `p`  | object    | `attr.copyPropsMap()` **plus** FlexNode layout (`margin` / `padding` / `width` / `flex` / …). Those keys never enter `propsMap` |
 | `hs` | bool      | a state dumper is installed for this node or its attr |
 | `s`  | object    | instrumented member variables — only for nodes the panel opened |
 | `as` | object    | the same for the node's `ComposeAttr` |
@@ -137,7 +140,32 @@ the server concatenates them by `seq`. The row closes on unsubscribe or page des
 Captured without extra instrumentation: `KRNetworkModule.httpRequest`, Hippy/TDF `network.fetch`
 (including `HttpService` / `httpGet` / `httpPost` which wrap it as `KuiklyTDFModule.asyncCall`),
 `TMNetworkModule.fetchMapServer`, TDF `TMLongLinkModule` subscribe/observe (pushes arrive as pager
-events such as `poiDetail:longConnect`), `TMKuiklyLongLinkModule`, and `TMKuiklyMQTTModule`.
+events such as `itemDetail:longConnect`), `TMKuiklyLongLinkModule`, and `TMKuiklyMQTTModule`.
+
+### NativeCallDto
+
+Module calls are sent twice: once at invoke, again when `FIRE_CALLBACK` arrives (sync / fire-and-forget
+calls are sent once). The server merges by `id`. Keep-alive callbacks (`NotifyModule.addNotify`)
+promote the row to `kind: "stream"` and subsequent payloads only carry new `msgs`.
+
+HTTP and long-link traffic stays on `network` and is not duplicated here. Log modules
+(`KRLogModule` and friends), HTTP / long-link / MQTT modules (including `network.getCookie`,
+`TMNetworkModule.cancel`, and the JCE wrapper itself), and per-frame `KRVsyncModule` are skipped.
+
+| key | meaning |
+| --- | ------- |
+| `id` | success callback id, or agent-generated `nc_*` when there is no callback |
+| `mod` | unwrapped module name (`KuiklyTDFModule.asyncCall("CalendarModule", …)` is stored as `CalendarModule`) |
+| `method` | method name |
+| `via` | channel: `KuiklyTDFModule.asyncCall` / `callModuleMethod` / `callTDFModuleMethod` |
+| `sync` | whether the call was synchronous |
+| `args` | arguments (string) |
+| `ts` | start timestamp |
+| `cost`, `ok`, `rsp`, `err` | set on completion. Sync `toNative` returns are captured by tapping `NativeBridge.toNative`. `sync && !rsp` means only arguments were captured (older agent, or the tap was not installed) |
+| `kind` | `stream` for keep-alive callbacks |
+| `msgs` / `frames` | same as NetworkDto, keep-alive only |
+
+Completion payloads also repeat module, method and args. Merge rules match NetworkDto.
 
 ## 2. Server to device
 
@@ -153,7 +181,7 @@ never needs a second channel.
 | `full`  | | next tick sends every node |
 | `state` | `ids: [int]` | dump member variables for exactly these nodes |
 | `sample`| `value: int` | change the sampling interval (clamped to 100..5000 ms) |
-| `clear` | | drop buffered logs and network records |
+| `clear` | | drop buffered logs, network and native-call records |
 | `shot`  | `id?: int`, `sample?: int` | capture the page (`id` omitted / `<= 0`) or a node via `toImage` |
 | `live`  | `on: bool`, `interval?: int`, `sample?: int` | stream page screenshots when the tree changes (default 2000 ms, sample 4) |
 

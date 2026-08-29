@@ -39,6 +39,7 @@ async function startServers({
     panelPort,
     close: () =>
       Promise.all([
+        new Promise((resolve) => { hub.close(); resolve(); }),
         new Promise((resolve) => ingest.close(resolve)),
         new Promise((resolve) => panel.server.close(resolve)),
       ]),

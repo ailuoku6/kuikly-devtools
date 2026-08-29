@@ -35,6 +35,9 @@ class ClassShape(val simpleName: String, val superTypeNames: List<String>)
  *  2. classes rooted at `ComposeView` / `ComposeAttr` / `Pager` get a state dumper
  *  3. `println(x)` becomes `KDevtools.printLine(x)`
  *
+ * Sync native returns are not rewritten here: every Kotlin → Native invoke goes through
+ * `NativeBridge.toNative`, which the runtime taps.
+ *
  * Nothing is deleted and no newline is ever introduced, so the instrumented copy stays diffable
  * against the original and line numbers keep matching.
  */
