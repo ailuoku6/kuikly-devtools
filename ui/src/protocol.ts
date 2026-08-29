@@ -230,4 +230,4 @@ export type DeviceCommand =
 /** Live page capture. Kept well below a video stream so toImage does not cook the device. */
 export const LIVE_SHOT_INTERVAL_MS = 2000;
 /** Default sampleSize for live frames (larger = fewer pixels, cheaper encode). */
-export const LIVE_SHOT_SAMPLE = 4;
+export const LIVE_SHOT_SAMPLE = 2;

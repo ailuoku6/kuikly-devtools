@@ -177,7 +177,7 @@ export function ScreenshotPane({
         </button>
         <span className="shot-sample">
           采样
-          {[1, 2, 4].map((value) => (
+          {[1, 2].map((value) => (
             <button
               key={value}
               className={sample === value ? 'active' : ''}

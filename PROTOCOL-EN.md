@@ -77,7 +77,7 @@ descendant). Full-page overlay hosts with no fill of their own pass empty space 
 | --- | ------- |
 | `id` | `nativeRef` of the captured view (`Pager` when `shot.id` was omitted / `<= 0`) |
 | `ts` | capture timestamp |
-| `sample` | `sampleSize` passed to `toImage` (clamped 1..8, default 2; larger = smaller/faster) |
+| `sample` | `sampleSize` passed to `toImage` (clamped 1..2, default 2; larger = smaller/faster) |
 | `data` | `data:image/png;base64,...` on success |
 | `err` | set instead of `data` when the view is missing, virtual (`renderView == null`), or `toImage` failed |
 | `ox`, `oy`, `ow`, `oh` | page-root origin and size of the captured view |
@@ -183,7 +183,7 @@ never needs a second channel.
 | `sample`| `value: int` | change the sampling interval (clamped to 100..5000 ms) |
 | `clear` | | drop buffered logs, network and native-call records |
 | `shot`  | `id?: int`, `sample?: int` | capture the page (`id` omitted / `<= 0`) or a node via `toImage` |
-| `live`  | `on: bool`, `interval?: int`, `sample?: int` | stream page screenshots when the tree changes (default 2000 ms, sample 4) |
+| `live`  | `on: bool`, `interval?: int`, `sample?: int` | stream page screenshots when the tree changes (default 2000 ms, sample 2) |
 
 Idempotent commands (`full`, `state`, `sample`, `shot`, `live`) are collapsed in the queue so a
 chatty panel cannot build up a backlog. The screenshot itself is delivered on a later ingest, not in

@@ -219,8 +219,8 @@ async function run() {
   assert.deepStrictEqual(stateCommand.ids, [1, 5], 'the newest state command wins');
   assert.deepStrictEqual(session.stateNodeIds, [1, 5]);
 
-  socket.send(JSON.stringify({ type: 'command', pagerId: '7', command: { type: 'shot', sample: 2 } }));
-  socket.send(JSON.stringify({ type: 'command', pagerId: '7', command: { type: 'shot', id: 2, sample: 4 } }));
+  socket.send(JSON.stringify({ type: 'command', pagerId: '7', command: { type: 'shot', sample: 1 } }));
+  socket.send(JSON.stringify({ type: 'command', pagerId: '7', command: { type: 'shot', id: 2, sample: 2 } }));
   await new Promise((resolve) => setTimeout(resolve, 80));
   response = await post(INGEST_PORT, INGEST_PATH, {
     v: 1,
@@ -232,7 +232,7 @@ async function run() {
   });
   const shotCommands = response.body.commands.filter((c) => c.type === 'shot');
   assert.strictEqual(shotCommands.length, 1, 'duplicate shot commands must collapse');
-  assert.deepStrictEqual(shotCommands[0], { type: 'shot', id: 2, sample: 4 });
+  assert.deepStrictEqual(shotCommands[0], { type: 'shot', id: 2, sample: 2 });
 
   const shotDelta = frames.waitFor((m) => m.type === 'delta' && m.screenshot && m.screenshot.data);
   await post(INGEST_PORT, INGEST_PATH, {

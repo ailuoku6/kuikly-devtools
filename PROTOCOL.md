@@ -66,7 +66,7 @@ Content-Type: application/json
 | --- | --- |
 | `id` | 被截图 view 的 `nativeRef`（`shot.id` 省略或 `<= 0` 时是页面根） |
 | `ts` | 截图时间 |
-| `sample` | 传给 `toImage` 的 `sampleSize`（限制 1..8，默认 2；越大图越小、越快） |
+| `sample` | 传给 `toImage` 的 `sampleSize`（限制 1..2，默认 2；越大图越小、越快） |
 | `data` | 成功时的 `data:image/png;base64,...` |
 | `err` | 找不到 view、虚拟节点（`renderView == null`）或 `toImage` 失败时出现，此时没有 `data` |
 | `ox` / `oy` / `ow` / `oh` | 被截图 view 相对页面根的原点与宽高 |
@@ -176,7 +176,7 @@ HTTP / 长连接仍走 `network`，不会重复出现在 `native` 里。日志�
 | `sample` | `value: int` | 改采样间隔（限制在 100~5000ms） |
 | `clear` | | 丢弃已缓冲的日志、网络记录和原生调用 |
 | `shot` | `id?: int`，`sample?: int` | 整页（省略 `id` 或 `<= 0`）或指定节点走 `toImage` 截图 |
-| `live` | `on: bool`，`interval?: int`，`sample?: int` | 树有变化时才整页截图（默认 2000ms，sample 4） |
+| `live` | `on: bool`，`interval?: int`，`sample?: int` | 树有变化时才整页截图（默认 2000ms，sample 2） |
 
 幂等命令（`full` / `state` / `sample` / `shot` / `live`）在队列里会被折叠，避免面板操作频繁时堆积。截图本身在后续 ingest 到达，不在本次响应里。
 

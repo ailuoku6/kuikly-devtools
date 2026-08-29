@@ -294,7 +294,7 @@ async function tick() {
       pendingScreenshot = {
         id: 1,
         ts: shotAt,
-        sample: 4,
+        sample: 2,
         live: true,
         ox: 0,
         oy: 0,

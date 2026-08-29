@@ -781,11 +781,11 @@ internal class KDevtoolsSession(
         const val MAX_SAMPLE_MS = 5000
         const val DEFAULT_SHOT_SAMPLE = 2
         const val MIN_SHOT_SAMPLE = 1
-        const val MAX_SHOT_SAMPLE = 8
+        const val MAX_SHOT_SAMPLE = 2
         const val DEFAULT_LIVE_MS = 2000
         const val MIN_LIVE_MS = 500
         const val MAX_LIVE_MS = 5000
-        const val DEFAULT_LIVE_SAMPLE = 4
+        const val DEFAULT_LIVE_SAMPLE = 2
         /** Hold logs/network at least this long unless a tree/screenshot ingest is already going out. */
         const val AUX_FLUSH_MS = 1500L
         const val AUX_FLUSH_LOGS = 64
