@@ -20,6 +20,7 @@ interface Props {
 export function ConsolePanel({ logs, droppedLogs, onClear }: Props) {
   const [enabled, setEnabled] = useState<Set<LogLevel>>(() => new Set<LogLevel>(['i', 'd', 'e', 'p']));
   const [query, setQuery] = useState('');
+  const [matchIndex, setMatchIndex] = useState(0);
   const [tag, setTag] = useState('');
   const [follow, setFollow] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -47,6 +48,23 @@ export function ConsolePanel({ logs, droppedLogs, onClear }: Props) {
       return true;
     });
   }, [logs, enabled, tag, query]);
+
+  const searchNeedle = query.trim();
+  const matches = useMemo(
+    () => (searchNeedle ? findLogMatches(filtered, searchNeedle) : []),
+    [filtered, searchNeedle]
+  );
+  const matchCount = matches.length;
+
+  // A new query/filter changes the result set, so keep the current match valid and
+  // start at the first result. This also handles logs being appended while searching.
+  useEffect(() => {
+    setMatchIndex((previous) => (matchCount > 0 ? Math.min(previous, matchCount - 1) : 0));
+  }, [matchCount]);
+
+  useEffect(() => {
+    setMatchIndex(0);
+  }, [enabled, searchNeedle, tag]);
 
   useEffect(() => {
     const element = scrollRef.current;
@@ -122,6 +140,20 @@ export function ConsolePanel({ logs, droppedLogs, onClear }: Props) {
     setFollow(atBottom);
   };
 
+  const jumpToMatch = (nextIndex: number) => {
+    if (!matchCount) return;
+    const index = (nextIndex + matchCount) % matchCount;
+    setMatchIndex(index);
+    setFollow(false);
+    const element = scrollRef.current;
+    if (!element) return;
+    // The virtual list's offsets are already based on the complete filtered set,
+    // so the target row can be positioned before it is mounted.
+    const target = matches[index];
+    element.scrollTop = offsets[target?.logIndex ?? 0] ?? 0;
+    setScrollTop(element.scrollTop);
+  };
+
   return (
     <div className="panel-body" style={{ flexDirection: 'column' }}>
       <div className="toolbar">
@@ -153,8 +185,43 @@ export function ConsolePanel({ logs, droppedLogs, onClear }: Props) {
           className="grow"
           placeholder="筛选日志…"
           value={query}
-          onChange={(event) => setQuery(event.target.value)}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setMatchIndex(0);
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' || !matchCount) return;
+            event.preventDefault();
+            jumpToMatch(matchIndex + (event.shiftKey ? -1 : 1));
+          }}
         />
+        {searchNeedle && (
+          <>
+            <span className="search-count" aria-live="polite">
+              {matchCount ? `${matchIndex + 1}/${matchCount}` : '0/0'}
+            </span>
+            <button
+              type="button"
+              className="search-nav"
+              onClick={() => jumpToMatch(matchIndex - 1)}
+              disabled={!matchCount}
+              title="上一个命中（Shift+Enter）"
+              aria-label="上一个命中"
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              className="search-nav"
+              onClick={() => jumpToMatch(matchIndex + 1)}
+              disabled={!matchCount}
+              title="下一个命中（Enter）"
+              aria-label="下一个命中"
+            >
+              ↓
+            </button>
+          </>
+        )}
         <span className="badge">
           {filtered.length}/{logs.length}
         </span>
@@ -181,7 +248,7 @@ export function ConsolePanel({ logs, droppedLogs, onClear }: Props) {
           <div className="log-virtual-content" style={{ height: offsets[offsets.length - 1] }}>
             {visibleLogs.map((log, offset) => (
               <div
-                className={`log-row ${log.lv}`}
+                className={`log-row ${log.lv} ${searchNeedle && matches[matchIndex]?.logIndex === startIndex + offset ? 'search-current' : ''}`}
                 key={rowKeys[startIndex + offset]}
                 ref={(element) => {
                   const key = rowKeys[startIndex + offset];
@@ -192,8 +259,12 @@ export function ConsolePanel({ logs, droppedLogs, onClear }: Props) {
               >
                 <span className="ts">{formatTime(log.ts)}</span>
                 <span className="lv">{log.lv.toUpperCase()}</span>
-                <span className="tag">{log.tag}</span>
-                <span className="msg">{log.msg}</span>
+                <span className="tag">
+                  {highlightText(log.tag, searchNeedle, currentMatchInField(matches, matchIndex, startIndex + offset, 'tag'))}
+                </span>
+                <span className="msg">
+                  {highlightText(log.msg, searchNeedle, currentMatchInField(matches, matchIndex, startIndex + offset, 'msg'))}
+                </span>
               </div>
             ))}
           </div>
@@ -201,6 +272,58 @@ export function ConsolePanel({ logs, droppedLogs, onClear }: Props) {
       </div>
     </div>
   );
+}
+
+type LogMatch = { logIndex: number; field: 'tag' | 'msg'; occurrence: number };
+
+function findLogMatches(logs: LogDto[], needle: string): LogMatch[] {
+  const matches: LogMatch[] = [];
+  logs.forEach((log, logIndex) => {
+    (['tag', 'msg'] as const).forEach((field) => {
+      const text = log[field];
+      let from = 0;
+      let occurrence = 0;
+      const normalized = text.toLowerCase();
+      const normalizedNeedle = needle.toLowerCase();
+      while (from < text.length) {
+        const position = normalized.indexOf(normalizedNeedle, from);
+        if (position < 0) break;
+        matches.push({ logIndex, field, occurrence });
+        occurrence += 1;
+        from = position + needle.length;
+      }
+    });
+  });
+  return matches;
+}
+
+function currentMatchInField(
+  matches: LogMatch[],
+  matchIndex: number,
+  logIndex: number,
+  field: LogMatch['field']
+): number | undefined {
+  const match = matches[matchIndex];
+  return match?.logIndex === logIndex && match.field === field ? match.occurrence : undefined;
+}
+
+function highlightText(text: string, needle: string, currentOccurrence?: number): React.ReactNode {
+  if (!needle) return text;
+  const parts = text.split(new RegExp(`(${escapeRegExp(needle)})`, 'ig'));
+  let occurrence = 0;
+  return parts.map((part, index) =>
+    part.toLowerCase() === needle.toLowerCase() ? (
+      <mark className={occurrence++ === currentOccurrence ? 'search-current-match' : ''} key={index}>
+        {part}
+      </mark>
+    ) : (
+      part
+    )
+  );
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function logKey(log: LogDto): string {

@@ -1,6 +1,6 @@
 {
   "name": "kuikly-devtools",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Chrome-DevTools-style inspector for Kuikly (KMP) pages: live view tree, props, component state, logs, network and native module calls.",
   "license": "MIT",
   "repository": {

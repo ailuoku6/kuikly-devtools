@@ -124,7 +124,7 @@ function findProjectRoot(start) {
 }
 
 function projectTempDir(options) {
-  return path.join(options.project || findProjectRoot(process.cwd()) || process.cwd(), '.kuiklyPageTemp');
+  return path.join(options.project || findProjectRoot(process.cwd()) || process.cwd(), '.kuiklyDevtoolTemp');
 }
 
 function projectRoot(options) {
@@ -370,6 +370,7 @@ async function commandBuildWithServer(options, build) {
   } else if (code === 0) {
     info(`构建成功 - 请打开调试面板：http://localhost:${options.panelPort}`);
     info('请在设备上重新加载页面以连接调试面板');
+    info('尝试 npx kuikly-devtools init-skill, 安装 kuikly-page-inspect skill, AI 直接读取页面信息！');
   }
   // A server that this process started intentionally keeps the CLI alive. A reused instance belongs
   // to the earlier process, so this invocation exits immediately after Gradle completes.
@@ -462,7 +463,7 @@ async function commandInspect(options) {
   log(JSON.stringify({
     savedTo: target,
     bytes: Buffer.byteLength(text),
-    message: 'Result exceeds 15 KiB. Read this JSON file selectively; it can be deleted from .kuiklyPageTemp when no longer needed.',
+    message: 'Result exceeds 15 KiB. Read this JSON file selectively; it can be deleted from .kuiklyDevtoolTemp when no longer needed.',
   }));
   return 0;
 }

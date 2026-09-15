@@ -88,7 +88,11 @@ export function App({ store }: { store: DevtoolsStore }) {
           onClear={() => store.clearActiveBuffers()}
         />
       ) : tab === 'network' ? (
-        <NetworkPanel network={session.network} onClear={() => store.clearActiveBuffers()} />
+        <NetworkPanel
+          network={session.network}
+          sessionKey={session.summary.pagerId}
+          onClear={() => store.clearActiveBuffers()}
+        />
       ) : tab === 'native' ? (
         <NativeCallsPanel native={session.native ?? []} onClear={() => store.clearActiveBuffers()} />
       ) : (

@@ -114,7 +114,7 @@ async function run() {
     assert.strictEqual(detail.status, 0, detail.stderr);
     const detailResult = JSON.parse(detail.stdout);
     assert.ok(detailResult.savedTo, 'large network body must be written to a project-local temp file');
-    assert.ok(detailResult.savedTo.startsWith(path.join(project, '.kuiklyPageTemp')));
+    assert.ok(detailResult.savedTo.startsWith(path.join(project, '.kuiklyDevtoolTemp')));
     const saved = JSON.parse(fs.readFileSync(detailResult.savedTo, 'utf8'));
     assert.strictEqual(saved.network.id, 'request-1');
     assert.strictEqual(saved.network.rsp.length > 16 * 1024, true);

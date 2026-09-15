@@ -84,7 +84,7 @@ npx kuikly-devtools inspect node-detail --pager 7 --id 42
 `logs` supports `--level` and `--tag`; `network` supports `--status` and `--kind`; list searches
 support `--limit` (50 by default, 200 maximum) and `--offset`. Search results only contain summaries,
 keys, and previews. Results up to and including 15 KiB are returned inline. Only a detail larger than
-15 KiB is written to `<project>/.kuiklyPageTemp/`, with the CLI returning a `savedTo` path. Read that
+15 KiB is written to `<project>/.kuiklyDevtoolTemp/`, with the CLI returning a `savedTo` path. Read that
 file selectively rather than placing it all in the AI context. The directory is Git-ignored, visible
 for manual removal, and can be cleared with `npx kuikly-devtools inspect clean-temp`.
 

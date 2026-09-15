@@ -84,7 +84,7 @@ npx kuikly-devtools inspect log-detail --pager 7 --id 42
 npx kuikly-devtools inspect node-detail --pager 7 --id 42
 ```
 
-`logs` 支持 `--level`、`--tag`；`network` 支持 `--status`、`--kind`；`native` 支持 `--kind`（`sync` / `async` / `stream`）；所有列表支持 `--limit`（默认 50，最大 200）和 `--offset` 分页。检索结果只返回摘要、属性键与请求/响应预览。返回 JSON 不超过 15 KiB 时直接返回原数据；只有单条详情严格超过 15 KiB，CLI 才会把完整 JSON 写到**业务项目根目录**的 `.kuiklyPageTemp/`，终端仅返回 `savedTo` 路径；AI 应只读取该文件需要的字段或片段，不能直接将完整文件注入上下文。该目录已被 Git 忽略，调试后可手动删除，或执行：
+`logs` 支持 `--level`、`--tag`；`network` 支持 `--status`、`--kind`；`native` 支持 `--kind`（`sync` / `async` / `stream`）；所有列表支持 `--limit`（默认 50，最大 200）和 `--offset` 分页。检索结果只返回摘要、属性键与请求/响应预览。返回 JSON 不超过 15 KiB 时直接返回原数据；只有单条详情严格超过 15 KiB，CLI 才会把完整 JSON 写到**业务项目根目录**的 `.kuiklyDevtoolTemp/`，终端仅返回 `savedTo` 路径；AI 应只读取该文件需要的字段或片段，不能直接将完整文件注入上下文。该目录已被 Git 忽略，调试后可手动删除，或执行：
 
 ```bash
 npx kuikly-devtools inspect clean-temp

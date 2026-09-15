@@ -28,7 +28,7 @@ npx kuikly-devtools inspect log-detail --pager <pager-id> --id <log-seq>
 npx kuikly-devtools inspect node-detail --pager <pager-id> --id <node-id>
 ```
 
-Never request the legacy full session endpoint for investigation. Search results contain summaries and body previews. Results at or below 15 KiB are returned as JSON; only a result larger than 15 KiB is written to `<project>/.kuiklyPageTemp/`, with the CLI returning `{ "savedTo": "..." }`. Read that file selectively with line- or field-oriented commands; do not paste the whole file into context. The directory is ignored by Git and remains visible for manual cleanup.
+Never request the legacy full session endpoint for investigation. Search results contain summaries and body previews. Results at or below 15 KiB are returned as JSON; only a result larger than 15 KiB is written to `<project>/.kuiklyDevtoolTemp/`, with the CLI returning `{ "savedTo": "..." }`. Read that file selectively with line- or field-oriented commands; do not paste the whole file into context. The directory is ignored by Git and remains visible for manual cleanup.
 
 ```bash
 npx kuikly-devtools inspect clean-temp

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { MouseEvent } from 'react';
 import { copyText } from '../copy';
 import { isPlainHttp, toCurl } from '../curl';
@@ -9,12 +9,19 @@ type Tab = 'req' | 'rsp' | 'frames';
 interface Props {
   network: NetworkDto[];
   onClear: () => void;
+  sessionKey?: string;
 }
 
-export function NetworkPanel({ network, onClear }: Props) {
+export function NetworkPanel({ network, onClear, sessionKey }: Props) {
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('rsp');
+  const [collapsedFrameKeys, setCollapsedFrameKeys] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    setSelectedId(null);
+    setCollapsedFrameKeys(new Set());
+  }, [sessionKey]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -71,6 +78,7 @@ export function NetworkPanel({ network, onClear }: Props) {
                     className={record.id === selectedId ? 'selected' : ''}
                     onClick={() => {
                       setSelectedId(record.id);
+                      setCollapsedFrameKeys(new Set());
                       setTab(record.kind === 'stream' ? 'frames' : 'rsp');
                     }}
                   >
@@ -102,6 +110,24 @@ export function NetworkPanel({ network, onClear }: Props) {
                 <button className={tab === 'frames' ? 'active' : ''} onClick={() => setTab('frames')}>
                   帧（{frames.length}）
                 </button>
+              )}
+              {tab === 'frames' && frames.length > 0 && (
+                <>
+                  <span className="grow" />
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setCollapsedFrameKeys(
+                        new Set(frames.map((frame) => frameKey(selected.id, frame.seq)))
+                      )
+                    }
+                  >
+                    收起全部
+                  </button>
+                  <button type="button" onClick={() => setCollapsedFrameKeys(new Set())}>
+                    展开全部
+                  </button>
+                </>
               )}
               {tab !== 'frames' && (
                 <>
@@ -147,7 +173,19 @@ export function NetworkPanel({ network, onClear }: Props) {
                 )}
               </div>
               {tab === 'frames' ? (
-                <FrameList frames={frames} />
+                <FrameList
+                  frames={frames}
+                  recordId={selected.id}
+                  collapsedFrameKeys={collapsedFrameKeys}
+                  onToggle={(key) =>
+                    setCollapsedFrameKeys((previous) => {
+                      const next = new Set(previous);
+                      if (next.has(key)) next.delete(key);
+                      else next.add(key);
+                      return next;
+                    })
+                  }
+                />
               ) : tab === 'req' ? (
                 <RequestPayload record={selected} note={payloadNote} />
               ) : (
@@ -185,20 +223,46 @@ function PayloadBlock({ title, text }: { title: string; text: string }) {
   );
 }
 
-function FrameList({ frames }: { frames: NetworkFrameDto[] }) {
+function FrameList({
+  frames,
+  recordId,
+  collapsedFrameKeys,
+  onToggle,
+}: {
+  frames: NetworkFrameDto[];
+  recordId: string;
+  collapsedFrameKeys: Set<string>;
+  onToggle: (key: string) => void;
+}) {
   if (frames.length === 0) {
     return <div className="empty">暂无帧数据，等待长连接 / MQTT 推送。</div>;
   }
   return (
     <div className="frame-list">
-      {frames.map((frame) => (
-        <FrameItem key={frame.seq} frame={frame} />
-      ))}
+      {frames.map((frame) => {
+        const key = frameKey(recordId, frame.seq);
+        return (
+          <FrameItem
+            key={frame.seq}
+            frame={frame}
+            collapsed={collapsedFrameKeys.has(key)}
+            onToggle={() => onToggle(key)}
+          />
+        );
+      })}
     </div>
   );
 }
 
-function FrameItem({ frame }: { frame: NetworkFrameDto }) {
+function FrameItem({
+  frame,
+  collapsed,
+  onToggle,
+}: {
+  frame: NetworkFrameDto;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
   const text = frame.data
     ? pretty(frame.data)
     : frame.dataChars
@@ -214,10 +278,23 @@ function FrameItem({ frame }: { frame: NetworkFrameDto }) {
         <span className="num">{new Date(frame.ts).toLocaleTimeString()}</span>
         <span className="grow" />
         <CopyButton text={text} />
+        <button
+          type="button"
+          className="frame-toggle"
+          onClick={onToggle}
+          title={collapsed ? '展开该批次数据' : '收起该批次数据'}
+          aria-expanded={!collapsed}
+        >
+          {collapsed ? '展开' : '收起'}
+        </button>
       </div>
-      <pre className="payload">{text}</pre>
+      {!collapsed && <pre className="payload">{text}</pre>}
     </div>
   );
+}
+
+function frameKey(recordId: string, sequence: number): string {
+  return `${recordId}:${sequence}`;
 }
 
 function statusClass(record: NetworkDto): string {

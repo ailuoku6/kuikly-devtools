@@ -73,6 +73,17 @@ select:focus {
   outline: 1px solid var(--accent);
 }
 
+mark {
+  padding: 0 1px;
+  border-radius: 2px;
+  color: #16171a;
+  background: var(--yellow);
+}
+
+mark.search-current-match {
+  background: var(--accent);
+}
+
 .app {
   display: flex;
   flex-direction: column;
@@ -579,6 +590,26 @@ select:focus {
   color: #ffb4ae;
 }
 
+.log-row.search-current {
+  background: rgba(74, 168, 255, 0.2);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.search-count {
+  min-width: 42px;
+  color: var(--text-dim);
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.search-nav {
+  min-width: 22px;
+  padding: 1px 4px;
+  line-height: 16px;
+}
+
 /* ------------------------------------------------------------------- network */
 
 table.net {
@@ -662,6 +693,18 @@ table.net tr.selected td {
 
 .frame-meta .grow {
   flex: 1;
+}
+
+.frame-toggle {
+  padding: 1px 6px;
+  color: var(--accent);
+  background: transparent;
+  border-color: transparent;
+}
+
+.frame-toggle:hover {
+  background: var(--bg-hover);
+  border-color: var(--border);
 }
 
 .frame-down {
