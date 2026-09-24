@@ -330,3 +330,8 @@ npx kuikly-devtools inspect edit --pager 7 --id 42 --target p --key backgroundCo
 ```
 
 Targets are `p` (properties), `s` (view state), and `as` (attr state). `--value` accepts JSON. The CLI waits for device confirmation and returns actual readback when available; failures exit nonzero. After a timeout, read the node before retrying because the edit may still apply. Edits affect the live page only. Inline editors show allowed values/formats for enums, booleans, colors, spacing and numeric types.
+
+## TODO
+
+- [ ] Mock network responses.
+- [ ] Mock native module call results.
