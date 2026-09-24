@@ -123,6 +123,65 @@ async function run() {
     assert.strictEqual(cleaned.status, 0, cleaned.stderr);
     assert.strictEqual(JSON.parse(cleaned.stdout).removed, 1);
 
+    // Exercise the installed CLI against the real server and an asynchronously polling device.
+    let liveNode = { id: 7, pid: -1, n: 'SearchBar', c: 'SearchBarView', r: true, hs: true,
+      p: { width: 100, backgroundColor: '4294901760', hint: 'Search' },
+      e: { p: { width: 'Float', backgroundColor: 'String', hint: 'String' } } };
+    servers.hub.ingest({ pagerId: 'inspect-1', tree: { nodes: [liveNode] } });
+    let acknowledgements = [];
+    const applied = [];
+    const poller = setInterval(() => {
+      const reply = servers.hub.ingest({ pagerId: 'inspect-1', tree: { nodes: [liveNode] }, editResults: acknowledgements });
+      acknowledgements = [];
+      for (const command of reply.commands) {
+        if (command.type === 'edit') {
+          applied.push(command);
+          if (command.value === 'reject-me') {
+            acknowledgements.push({ requestId: command.requestId, ok: false, error: 'Custom setter rejected value' });
+          } else {
+            liveNode = { ...liveNode, [command.target]: { ...liveNode[command.target], [command.key]: command.value } };
+            acknowledgements.push({ requestId: command.requestId, ok: true });
+          }
+        } else if (command.type === 'state') {
+          liveNode = { ...liveNode, s: { enabled: true }, e: { ...liveNode.e, s: { enabled: 'Boolean' } } };
+        }
+      }
+    }, 20);
+    const editArgs = ['edit', '--pager', 'inspect-1', '--id', '7', '--target', 'p'];
+    try {
+      const edited = await inspect([...editArgs, '--key', 'width', '--value', '125.5'], project);
+      assert.equal(edited.status, 0, edited.stderr || edited.stdout);
+      assert.equal(JSON.parse(edited.stdout).ok, true);
+      assert.equal(JSON.parse(edited.stdout).value, 125.5);
+      const color = await inspect([...editArgs, '--key', 'backgroundColor', '--value', '"#80112233"'], project);
+      assert.equal(color.status, 0, color.stderr || color.stdout);
+      assert.equal(JSON.parse(color.stdout).value, '0x80112233');
+      assert.equal(applied.at(-1).value, '2148606515');
+      const state = await inspect(['state', '--pager', 'inspect-1', '--id', '7'], project);
+      assert.equal(state.status, 0, state.stderr || state.stdout);
+      assert.equal(JSON.parse(state.stdout).node.e.s.enabled, 'Boolean');
+      const stateEdit = await inspect(['edit', '--pager', 'inspect-1', '--id', '7', '--target', 's', '--key', 'enabled', '--value', 'false'], project);
+      assert.equal(stateEdit.status, 0, stateEdit.stderr || stateEdit.stdout);
+      assert.equal(JSON.parse(stateEdit.stdout).value, false);
+      const beforeInvalid = applied.length;
+      for (const args of [
+        [...editArgs, '--key', 'width', '--value', '"invalid"'],
+        [...editArgs, '--key', 'readOnly', '--value', '1'],
+        [...editArgs, '--key', 'hint', '--value', 'not-json'],
+      ]) {
+        const invalid = await inspect(args, project);
+        assert.notEqual(invalid.status, 0);
+      }
+      assert.equal(applied.length, beforeInvalid, 'invalid CLI edits must not reach the device');
+      const rejected = await inspect([...editArgs, '--key', 'hint', '--value', '"reject-me"'], project);
+      assert.notEqual(rejected.status, 0);
+      assert.match(rejected.stderr + rejected.stdout, /Custom setter rejected/);
+      assert.equal(applied.length, beforeInvalid + 1, 'failed edits must never be automatically replayed');
+    } finally { clearInterval(poller); }
+    const timedOut = await inspect([...editArgs, '--key', 'width', '--value', '140', '--timeout-ms', '100'], project);
+    assert.notEqual(timedOut.status, 0);
+    assert.match(timedOut.stdout + timedOut.stderr, /may still apply/);
+
     assert.strictEqual(commandInitSkill({ project, force: false }), 0);
     for (const client of ['.codex', '.claude', '.cursor']) {
       assert.ok(fs.existsSync(path.join(project, client, 'skills', 'kuikly-page-inspect', 'SKILL.md')));

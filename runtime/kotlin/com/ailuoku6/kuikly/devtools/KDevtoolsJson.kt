@@ -48,67 +48,10 @@ internal object KDevtoolsJson {
                 json.put("…", "${source.size - MAX_COLLECTION} more")
                 break
             }
-            json.put(key, encodeProp(key, value, depth + 1))
+            json.put(key, encode(value, depth + 1))
             count++
         }
         return json
-    }
-
-    /**
-     * Kuikly [com.tencent.kuikly.core.base.Color] is a signed ARGB Int. Alpha ≥ 0x80 makes
-     * `toString()` look like `-14101165`. Colour props are emitted as `0xAARRGGBB`.
-     */
-    private fun encodeProp(key: String, value: Any?, depth: Int): Any? {
-        if (isColorKey(key)) {
-            argbHex(value)?.let { return it }
-        }
-        return encode(value, depth)
-    }
-
-    private fun isColorKey(key: String): Boolean {
-        val lower = key.lowercase()
-        return lower.contains("color") || lower.contains("tint")
-    }
-
-    private fun argbHex(value: Any?): String? {
-        val bits = colorBits(value) ?: return null
-        val hex = bits.toString(16).uppercase()
-        return "0x" + hex.padStart(8, '0')
-    }
-
-    private fun colorBits(value: Any?): Long? {
-        when (value) {
-            null -> return null
-            is Int -> return value.toLong() and 0xFFFFFFFFL
-            is Long -> return value and 0xFFFFFFFFL
-            is Double -> {
-                if (value % 1.0 != 0.0) return null
-                return value.toLong() and 0xFFFFFFFFL
-            }
-            is Float -> {
-                if (value % 1f != 0f) return null
-                return value.toLong() and 0xFFFFFFFFL
-            }
-            is String -> {
-                val text = value.trim()
-                if (text.startsWith("0x") || text.startsWith("0X")) {
-                    return text.substring(2).toLongOrNull(16)?.and(0xFFFFFFFFL)
-                }
-                if (text.startsWith("#") && (text.length == 7 || text.length == 9)) {
-                    val body = if (text.length == 7) "FF" + text.substring(1) else text.substring(1)
-                    return body.toLongOrNull(16)?.and(0xFFFFFFFFL)
-                }
-                return text.toLongOrNull()?.and(0xFFFFFFFFL)
-            }
-            else -> {
-                val text = try {
-                    value.toString()
-                } catch (t: Throwable) {
-                    return null
-                }
-                return colorBits(text)
-            }
-        }
     }
 
     private fun encodeIterable(source: Iterable<*>, depth: Int): JSONArray {

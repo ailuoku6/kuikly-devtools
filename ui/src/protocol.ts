@@ -5,6 +5,8 @@
 
 export interface NodeDto {
   id: number;
+  /** Writable fields and original Kuikly value types, supplied by the runtime. */
+  e?: Partial<Record<EditTarget, Record<string, string>>>;
   pid: number;
   /** index within the parent's templateChildren(), so siblings keep DSL order */
   ci?: number;
@@ -195,7 +197,12 @@ export interface FullSessionState extends SessionSummary {
   screenshot?: ScreenshotDto | null;
 }
 
+export type EditTarget = 'p' | 's' | 'as';
+export type EditHandler = (target: EditTarget, key: string, value: unknown) => Promise<void>;
+export interface EditResult { requestId: string; ok: boolean; error?: string }
+
 export interface DeltaMessage {
+  editResults?: EditResult[];
   type: 'delta';
   pagerId: string;
   full: boolean;
@@ -217,9 +224,10 @@ export type ServerMessage =
   | { type: 'session-added'; summary: SessionSummary }
   | { type: 'session-removed'; pagerId: string }
   | { type: 'cleared'; pagerId: string }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string; requestId?: string };
 
 export type DeviceCommand =
+  | { type: 'edit'; requestId: string; id: number; target: EditTarget; key: string; value: unknown }
   | { type: 'full' }
   | { type: 'state'; ids: number[] }
   | { type: 'sample'; value: number }

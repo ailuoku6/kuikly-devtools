@@ -212,3 +212,23 @@ deleted only when the device reports `destroyed`.
 
 REST equivalents exist for scripting: `GET /api/sessions`, `GET /api/session?pagerId=`,
 `POST /api/command`.
+
+## Editing and color normalization (optional v1 extension)
+
+Nodes may include `e: {p?: {field: type}, s?: {...}, as?: {...}}`, listing writable fields only. State metadata is collected on demand with `s/as`. Types are `String/Boolean/Byte/Short/Int/Long/Float/Double/Char/Color`, optionally suffixed with `?`; spacing uses `space` and layout enums use `enum:VALUE1,VALUE2`. Nodes without metadata are read-only.
+
+The runtime sends raw JSON-safe values, including Color's decimal or native token string. The server normalizes colors in properties/state to `0xAARRGGBB` for WebSocket, HTTP inspection and snapshots. Color-typed members are recognized even without color/tint in their names.
+
+Send `{type:"edit",requestId:"unique-id",id:123,target:"p"|"s"|"as",key:"field",value:...}` through a WebSocket command or POST `/api/command`. The server validates writability/types, restores the original color representation, and queues the command without coalescing edits. Queue acceptance is not device success.
+
+Subsequent device ingest includes `editResults:[{requestId,ok,error?}]`, forwarded in the delta alongside the refreshed tree. Successful edits request a full tree and subscribe to the edited node's state. Failed uploads retry acknowledgements. Validation failures return WebSocket `{type:"error",message,requestId}` or HTTP 400.
+
+Screenshot packets set `full:true` and include the complete tree collected at upload time (`changed` is the transmitted node count). The runtime separately tracks actual changes so resending a tree cannot continuously trigger live captures. Native image capture is asynchronous; image and tree are not an atomic snapshot.
+
+### CLI editing and state fetching
+
+`inspect edit --pager <pagerId> --id <nativeRef> --target <p|s|as> --key <field> --value <JSON>` submits one edit with a unique requestId over WebSocket and waits for the device acknowledgement. Successful output is `{pagerId,requestId,ok:true,id,target,key,value}`, with actual readback from that delta, or `readbackUnavailable:true` when the field is absent. Validation failures, device failures, page closure and timeouts exit nonzero without retrying. `--timeout-ms` defaults to 20000 (range 100–120000).
+
+`inspect state --pager <pagerId> --id <nativeRef>` requests state and waits for a device delta, returning `{pagerId,node}` with s/as and writable metadata. It replaces the session's state subscription list. Both commands retain the 15 KiB output spill rule.
+
+Live capture is pumped both on sampling ticks and after successful uploads, so continuous state uploads cannot starve screenshots. Both paths share live, in-flight and rate-limit guards.

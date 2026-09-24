@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react';
-import type { NodeDto, ScreenshotDto } from '../protocol';
+import type { EditTarget, NodeDto, ScreenshotDto } from '../protocol';
 import { buildRows } from '../tree';
 import { Inspector, ScreenshotPane } from './Inspector';
 import { VirtualTree } from './VirtualTree';
 
 interface Props {
+  onEdit: (id: number, target: EditTarget, key: string, value: unknown) => Promise<void>;
   nodes: Map<number, NodeDto>;
   composeOnly: boolean;
   selectedId: number | null;
@@ -28,6 +29,7 @@ export function ElementsPanel({
   screenshot,
   onCapture,
   onLive,
+  onEdit,
 }: Props) {
   const [query, setQuery] = useState('');
   const [collapsed, setCollapsed] = useState<Set<number>>(() => new Set());
@@ -116,6 +118,8 @@ export function ElementsPanel({
       </div>
       <div className="split-right">
         <Inspector
+          key={selectedId}
+          onEdit={(target, key, value) => selected ? onEdit(selected.id, target, key, value) : Promise.reject(new Error('未选择节点'))}
           node={selected}
           nodes={nodes}
           stateRequested={selectedId !== null && stateNodeIds.includes(selectedId)}

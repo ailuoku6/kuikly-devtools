@@ -344,7 +344,11 @@ function handlePanelMessage(hub, socket, message, onEvent) {
       break;
     }
     case 'command':
-      hub.enqueueCommand(String(message.pagerId || ''), message.command);
+      try {
+        if (!hub.enqueueCommand(String(message.pagerId || ''), message.command)) throw new Error('Session is no longer available');
+      } catch (error) {
+        send(socket, { type: 'error', message: error.message, requestId: message.command?.requestId });
+      }
       break;
     case 'clear':
     case 'drop':

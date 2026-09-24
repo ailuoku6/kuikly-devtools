@@ -31,8 +31,9 @@ internal class KDevtoolsTree(private val pager: Pager) {
     /**
      * @param full ignore the diff cache and emit every node
      * @param stateNodeIds nodes the panel currently has open; only those pay the state-dump cost
+     * @param includeAll emit every node without clearing the actual-change cache
      */
-    fun collect(full: Boolean, stateNodeIds: Set<Int>): TreeDelta {
+    fun collect(full: Boolean, stateNodeIds: Set<Int>, includeAll: Boolean = false): TreeDelta {
         val nodes = JSONArray()
         val removed = JSONArray()
         val alive = HashSet<Int>()
@@ -54,12 +55,11 @@ internal class KDevtoolsTree(private val pager: Pager) {
 
             val json = describe(view, current.parentId, current.childIndex, stateNodeIds)
             val serialized = json.toString()
-            // State dumps are on demand and intentionally excluded from the diff cache, otherwise
-            // opening a node would make it look permanently dirty.
-            if (stateNodeIds.contains(view.nativeRef) || lastSerialized[view.nativeRef] != serialized) {
-                nodes.put(json)
-                changed++
-            }
+            // Requested state and screenshot trees may be resent unchanged. Count only actual
+            // serialized changes so resending cannot continuously trigger live screenshots.
+            val differs = lastSerialized[view.nativeRef] != serialized
+            if (includeAll || stateNodeIds.contains(view.nativeRef) || differs) nodes.put(json)
+            if (differs) changed++
             lastSerialized[view.nativeRef] = serialized
 
             if (view is ViewContainer<*, *>) {
@@ -146,7 +146,11 @@ internal class KDevtoolsTree(private val pager: Pager) {
         } catch (t: Throwable) {
             null
         }
-        json.put("p", KDevtoolsJson.objectOf(collectViewProps(view, attr)))
+        val props = collectViewProps(view, attr)
+        json.put("p", KDevtoolsJson.objectOf(props))
+        val editable = JSONObject()
+        editable.put("p", KDevtoolsJson.objectOf(editableProps(props)))
+        json.put("e", editable)
 
         val hasOwnState = KDevtools.hasState(view)
         val hasAttrState = attr != null && KDevtools.hasState(attr)
@@ -154,10 +158,16 @@ internal class KDevtoolsTree(private val pager: Pager) {
 
         if (stateNodeIds.contains(view.nativeRef)) {
             if (hasOwnState) {
-                KDevtools.dumpState(view)?.let { json.put("s", KDevtoolsJson.objectOf(it)) }
+                KDevtools.dumpState(view)?.let {
+                    json.put("s", KDevtoolsJson.objectOf(it))
+                    editable.put("s", KDevtoolsJson.objectOf(KDevtools.editableState(view, it)))
+                }
             }
             if (hasAttrState && attr != null) {
-                KDevtools.dumpState(attr)?.let { json.put("as", KDevtoolsJson.objectOf(it)) }
+                KDevtools.dumpState(attr)?.let {
+                    json.put("as", KDevtoolsJson.objectOf(it))
+                    editable.put("as", KDevtoolsJson.objectOf(KDevtools.editableState(attr, it)))
+                }
             }
         }
         return json

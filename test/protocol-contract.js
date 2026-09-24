@@ -235,20 +235,8 @@ assert.ok(
   inspectorSrc.includes('sortedEntries') && inspectorSrc.includes('sortedJson'),
   'the inspector must sort props before rendering'
 );
-assert.ok(
-  jsonSrc.includes('fun isColorKey') && jsonSrc.includes('0x'),
-  'colour props must be encoded as 0xAARRGGBB, not a signed Int'
-);
-assert.ok(
-  inspectorSrc.includes('toArgbHex') && inspectorSrc.includes('0x'),
-  'the inspector must render colour props as 0xAARRGGBB'
-);
-{
-  const bits = -14101165 >>> 0;
-  const hex = `0x${bits.toString(16).toUpperCase().padStart(8, '0')}`;
-  assert.strictEqual(hex.length, 10, 'ARGB hex is 0x + 8 digits');
-  assert.ok(hex.startsWith('0xFF') || hex.startsWith('0x'), hex);
-}
+assert.ok(!jsonSrc.includes('argbHex'), 'the runtime must send raw values; color formatting belongs to the server');
+assert.ok(!inspectorSrc.includes('toArgbHex'), 'the panel must consume server-normalized colors');
 
 const layoutSrc = fs.readFileSync(path.join(RUNTIME, 'KDevtoolsLayout.kt'), 'utf8');
 assert.ok(

@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties, MouseEvent, ReactNode } from 'react';
 import { copyText } from '../copy';
-import type { NodeDto, ScreenshotDto } from '../protocol';
+import { editHint } from '../editHints';
+import type { EditHandler, NodeDto, ScreenshotDto } from '../protocol';
 import { LIVE_SHOT_INTERVAL_MS, LIVE_SHOT_SAMPLE } from '../protocol';
 import { hitTestNode, overlayBox, pathTo, visualFrame } from '../tree';
 
 interface InspectorProps {
+  onEdit: EditHandler;
   node: NodeDto | null;
   nodes: Map<number, NodeDto>;
   stateRequested: boolean;
@@ -28,11 +30,13 @@ export function Inspector({
   stateRequested,
   onRequestState,
   onSelect,
+  onEdit,
 }: InspectorProps) {
   return (
     <div className="scroll">
       {node ? (
         <NodeInspector
+          onEdit={onEdit}
           node={node}
           nodes={nodes}
           stateRequested={stateRequested}
@@ -246,7 +250,9 @@ function NodeInspector({
   stateRequested,
   onRequestState,
   onSelect,
+  onEdit,
 }: {
+  onEdit: EditHandler;
   node: NodeDto;
   nodes: Map<number, NodeDto>;
   stateRequested: boolean;
@@ -263,6 +269,11 @@ function NodeInspector({
 
   return (
     <>
+      {!node.e && (
+        <div className="editing-notice" role="status">
+          当前页面未提供编辑能力，属性和状态暂为只读。请使用新版 DevTools 重新插桩编译并重新加载设备页面，再点击“重新同步”。
+        </div>
+      )}
       <Section title="节点" defaultOpen>
         <div className="kv">
           <Row k="nativeRef" v={node.id} />
@@ -312,7 +323,7 @@ function NodeInspector({
       </Section>
 
       <Section title={`属性 (${Object.keys(node.p ?? {}).length})`} defaultOpen>
-        <KeyValues key={`p-${node.id}`} values={node.p} emptyLabel="未设置属性" />
+        <KeyValues key={`p-${node.id}`} values={node.p} editable={node.e?.p} onEdit={(key, value) => onEdit('p', key, value)} emptyLabel="未设置属性" />
       </Section>
 
       <Section title="状态" defaultOpen>
@@ -337,13 +348,13 @@ function NodeInspector({
             {node.s && (
               <>
                 <SubTitle>view</SubTitle>
-                <KeyValues key={`s-${node.id}`} values={node.s} emptyLabel="空" />
+                <KeyValues key={`s-${node.id}`} values={node.s} editable={node.e?.s} onEdit={(key, value) => onEdit('s', key, value)} emptyLabel="空" />
               </>
             )}
             {node.as && (
               <>
                 <SubTitle>attr</SubTitle>
-                <KeyValues key={`as-${node.id}`} values={node.as} emptyLabel="空" />
+                <KeyValues key={`as-${node.id}`} values={node.as} editable={node.e?.as} onEdit={(key, value) => onEdit('as', key, value)} emptyLabel="空" />
               </>
             )}
           </>
@@ -433,23 +444,97 @@ function formatBoxNum(value: number): string {
   return String(rounded);
 }
 
-function KeyValues({ values, emptyLabel }: { values?: Record<string, unknown>; emptyLabel: string }) {
+function KeyValues({ values, emptyLabel, editable, onEdit }: {
+  values?: Record<string, unknown>; emptyLabel: string;
+  editable?: Record<string, string>;
+  onEdit: (key: string, value: unknown) => Promise<void>;
+}) {
   const entries = sortedEntries(values);
   if (entries.length === 0) return <div className="empty">{emptyLabel}</div>;
   return (
-    <div className="kv">
-      {entries.map(([key, value]) => (
-        <Row key={key} k={key} v={value} />
-      ))}
-    </div>
+    <>
+      {editable && !entries.some(([key]) => editable[key]) && (
+        <div className="editing-notice">
+          当前字段均为只读；仅支持可写的基础类型、Color 和布局属性。
+        </div>
+      )}
+      <div className="kv">
+        {entries.map(([key, value]) => (
+          <Row key={key} k={key} v={value} editType={editable?.[key]} onEdit={(value) => onEdit(key, value)} />
+        ))}
+      </div>
+    </>
   );
 }
 
 const FOLD_CHARS = 80;
 const FOLD_LINES = 3;
 
-function Row({ k, v }: { k: string; v: unknown }) {
-  const hex = isColorKey(k) ? toArgbHex(v) : null;
+function Row({ k, v, editType, onEdit }: {
+  k: string; v: unknown; editType?: string; onEdit?: (value: unknown) => Promise<void>;
+}) {
+  const hex = typeof v === 'string' && /^0x[0-9A-F]{8}$/.test(v) ? v : null;
+  const colorEditable = editType?.startsWith('Color') || (/color|tint/i.test(k) && /^(String|Int|Long)\??$/.test(editType ?? ''));
+  const editable = Boolean(editType && onEdit);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [editError, setEditError] = useState('');
+  const editActive = useRef(false);
+  const savePending = useRef(false);
+  const initialDraft = useRef('');
+  const composing = useRef(false);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (editing) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [editing]);
+
+  const beginEdit = () => {
+    if (!editable || savePending.current || editActive.current) return;
+    initialDraft.current = typeof v === 'string' ? v : JSON.stringify(v) ?? 'null';
+    setDraft(initialDraft.current);
+    setEditError('');
+    composing.current = false;
+    editActive.current = true;
+    setEditing(true);
+  };
+
+  const cancelEdit = () => {
+    editActive.current = false;
+    setEditing(false);
+    setDraft(initialDraft.current);
+  };
+
+  const save = async () => {
+    // Enter unmounts the editor and can also cause blur. Claim the edit synchronously,
+    // before React renders or the device responds, so it is only submitted once.
+    if (!editActive.current || savePending.current || !onEdit || !editType) return;
+    editActive.current = false;
+    setEditing(false);
+    if (draft === initialDraft.current) return;
+    try {
+      let value: unknown = draft;
+      if (draft === 'null' && editType.endsWith('?')) value = null;
+      else if (colorEditable || editType.startsWith('String') || editType.startsWith('Char') || editType.startsWith('enum:')) {
+        value = draft.startsWith('"') ? JSON.parse(draft) : draft;
+      } else value = JSON.parse(draft);
+      savePending.current = true;
+      setSaving(true);
+      setEditError('');
+      await onEdit(value);
+    } catch (error) {
+      // The displayed value comes from device readback, never from the invalid draft.
+      setDraft(initialDraft.current);
+      setEditError(error instanceof Error ? error.message : String(error));
+    } finally {
+      savePending.current = false;
+      setSaving(false);
+    }
+  };
   const text = format(k, v);
   const long = needsFold(text);
   const [open, setOpen] = useState(false);
@@ -488,11 +573,57 @@ function Row({ k, v }: { k: string; v: unknown }) {
             {copyButton}
           </span>
         )}
-        <span className="v-body" onClick={long && !open ? () => setOpen(true) : undefined}>
-          {hex && <span className="color-chip" style={{ backgroundColor: argbCss(hex) }} />}
-          {shown}
-        </span>
-        {!long && copyButton}
+        {editing ? (
+          <div className="inline-value-editor">
+            <textarea
+              ref={inputRef}
+              className="value-input"
+              aria-label={`编辑 ${k}`}
+              rows={Math.min(6, Math.max(1, draft.split('\n').length))}
+              value={draft}
+              spellCheck={false}
+              onChange={(event) => setDraft(event.target.value)}
+              onBlur={() => void save()}
+              onCompositionStart={() => { composing.current = true; }}
+              onCompositionEnd={() => { composing.current = false; }}
+              onKeyDown={(event) => {
+                // Let Enter confirm Chinese/Japanese input before it can submit a value.
+                if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  cancelEdit();
+                } else if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault();
+                  void save();
+                }
+              }}
+            />
+            <div className="edit-hint">{editType && editHint(k, editType)}</div>
+            <div className="edit-hint">回车或失焦应用 · Esc 取消 · Shift+Enter 换行</div>
+          </div>
+        ) : (
+          <span
+            className={`v-body${editable ? ' editable' : ''}${saving ? ' saving' : ''}`}
+            role={editable ? 'button' : undefined}
+            tabIndex={editable && !saving ? 0 : undefined}
+            aria-label={editable ? `编辑 ${k}：${text}` : undefined}
+            aria-disabled={editable && saving ? true : undefined}
+            title={editable ? '点击编辑，回车或失焦应用；Esc 取消，Shift+Enter 换行' : undefined}
+            onClick={editable ? beginEdit : long && !open ? () => setOpen(true) : undefined}
+            onKeyDown={editable ? (event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                beginEdit();
+              }
+            } : undefined}
+          >
+            {hex && <span className="color-chip" style={{ backgroundColor: argbCss(hex) }} />}
+            {shown || (editable ? '\u00a0' : '')}
+          </span>
+        )}
+        {!long && !editing && copyButton}
+        {saving && <span className="edit-status" role="status">应用中…</span>}
+        {editError && <div className="edit-error" role="alert">{editError}</div>}
       </div>
     </>
   );
@@ -523,8 +654,8 @@ function formatSize(chars: number): string {
   return `${Math.round(chars / 1000)}k`;
 }
 
-function valueClass(key: string, value: unknown): string {
-  if (isColorKey(key) && toArgbHex(value)) return 'color';
+function valueClass(_key: string, value: unknown): string {
+  if (typeof value === 'string' && /^0x[0-9A-F]{8}$/.test(value)) return 'color';
   if (typeof value === 'number') return 'num';
   if (typeof value === 'boolean') return 'bool';
   // The agent writes this marker when a getter threw or a lateinit was still unset.
@@ -532,11 +663,7 @@ function valueClass(key: string, value: unknown): string {
   return '';
 }
 
-function format(key: string, value: unknown): string {
-  if (isColorKey(key)) {
-    const hex = toArgbHex(value);
-    if (hex) return hex;
-  }
+function format(_key: string, value: unknown): string {
   if (value === null || value === undefined) return 'null';
   if (typeof value === 'object') {
     try {
@@ -565,33 +692,11 @@ function sortedJson(value: unknown): unknown {
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [key, nested] of sortedEntries(value as Record<string, unknown>)) {
-      out[key] = isColorKey(key) ? toArgbHex(nested) ?? sortedJson(nested) : sortedJson(nested);
+      out[key] = sortedJson(nested);
     }
     return out;
   }
   return value;
-}
-
-function isColorKey(key: string): boolean {
-  const lower = key.toLowerCase();
-  return lower.includes('color') || lower.includes('tint');
-}
-
-/** Signed ARGB Int `-14101165` and unsigned decimal from Color.toString() both become `0xAARRGGBB`. */
-function toArgbHex(value: unknown): string | null {
-  let bits: number | null = null;
-  if (typeof value === 'number' && Number.isFinite(value) && Math.trunc(value) === value) {
-    bits = value;
-  } else if (typeof value === 'string') {
-    const text = value.trim();
-    if (/^0x[0-9a-fA-F]{1,8}$/i.test(text)) bits = parseInt(text, 16);
-    else if (/^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(text)) {
-      const body = text.length === 7 ? `FF${text.slice(1)}` : text.slice(1);
-      bits = parseInt(body, 16);
-    } else if (/^-?\d+$/.test(text)) bits = Number(text);
-  }
-  if (bits === null) return null;
-  return `0x${(bits >>> 0).toString(16).toUpperCase().padStart(8, '0')}`;
 }
 
 function argbCss(hex: string): string {

@@ -15,12 +15,13 @@ import com.tencent.kuikly.core.timer.setTimeout
 internal class KDevtoolsSession(
     val pagerId: String,
     private val pager: Pager,
-    private val className: String
+    private val className: String,
+    private val sendPayload: (JSONObject, (Boolean, JSONArray?) -> Unit) -> Unit =
+        KDevtoolsTransport(pager, pagerId)::send
 ) {
 
     private val tree = KDevtoolsTree(pager)
     private val tap = KDevtoolsBridgeTap(this)
-    private val transport = KDevtoolsTransport(pager, pagerId)
     internal val sessionId: String = nextSessionId()
 
     private val logs = ArrayList<LogRecord>()
@@ -63,6 +64,7 @@ internal class KDevtoolsSession(
     private var inFlightNative: ArrayList<NativeCallRecord>? = null
     private var inFlightDropped = 0
     private var pendingScreenshot: JSONObject? = null
+    private val editResults = ArrayList<JSONObject>()
     private var screenshotInFlight = false
     private var queuedShotId: Int? = null
     private var queuedShotSample = 2
@@ -289,9 +291,11 @@ internal class KDevtoolsSession(
     // -------------------------------------------------------------------- uploading
 
     private fun upload() {
-        val isFull = needFullSnapshot
-        val delta = tree.collect(isFull, stateNodeIds)
-        if (isFull || delta.changed != 0 || delta.removed.length() != 0) {
+        val requestedFull = needFullSnapshot
+        val includeShotTree = pendingScreenshot != null
+        val isFull = requestedFull || includeShotTree
+        val delta = tree.collect(requestedFull, stateNodeIds, includeAll = includeShotTree)
+        if (requestedFull || delta.changed != 0 || delta.removed.length() != 0) {
             liveNeedsFrame = true
         }
 
@@ -311,7 +315,7 @@ internal class KDevtoolsSession(
         // sample. Chunked bodies flush immediately so a multi-megabyte rsp is not delayed 1.5s
         // per slice.
         val now = DateTime.currentTimestamp()
-        val hasTree = isFull || delta.changed != 0 || delta.removed.length() != 0
+        val hasTree = isFull || delta.nodes.length() != 0 || delta.removed.length() != 0 || editResults.isNotEmpty()
         val hasShot = pendingScreenshot != null
         val logCount = logs.size
         val netCount = flushedNetwork.size
@@ -374,7 +378,10 @@ internal class KDevtoolsSession(
             pendingScreenshot = null
         }
 
+        val flushedEdits = ArrayList(editResults)
+        editResults.clear()
         val payload = JSONObject().apply {
+            if (flushedEdits.isNotEmpty()) put("editResults", JSONArray().apply { for (result in flushedEdits) put(result) })
             put("v", PROTOCOL_VERSION)
             put("pagerId", pagerId)
             put("sid", sessionId)
@@ -390,7 +397,7 @@ internal class KDevtoolsSession(
                 put("nodes", delta.nodes)
                 put("removed", delta.removed)
                 put("total", delta.total)
-                put("changed", delta.changed)
+                put("changed", delta.nodes.length())
             })
             put("logs", logsJson)
             put("network", networkJson)
@@ -416,7 +423,7 @@ internal class KDevtoolsSession(
         inFlightNetwork = flushedNetwork
         inFlightNative = flushedNative
         inFlightDropped = droppedNow
-        transport.send(payload) { ok, commands ->
+        sendPayload(payload) { ok, commands ->
             uploadInFlight = false
             inFlightLogs = null
             inFlightNetwork = null
@@ -437,13 +444,17 @@ internal class KDevtoolsSession(
                     record.revertDrain()
                 }
             }
-            if (detached) return@send
+            if (detached) return@sendPayload
             if (ok) {
                 commands?.let { applyCommands(it) }
+                // A subscribed state node uploads on every tick. tick() sees uploadInFlight
+                // and cannot capture; give live capture a turn when the async upload completes.
+                pumpLiveShot()
             } else {
                 // Put what we could not deliver back at the front of the buffer, and ask for a full
                 // snapshot next time since the receiver never saw this delta.
                 restoreLogs(flushedLogs)
+                editResults.addAll(0, flushedEdits)
                 droppedLogs += droppedNow
                 if (attachShot && shot != null && pendingScreenshot == null) {
                     pendingScreenshot = shot
@@ -533,7 +544,7 @@ internal class KDevtoolsSession(
             }
             first = false
             try {
-                transport.send(payload) { _, _ -> }
+                sendPayload(payload) { _, _ -> }
             } catch (_: Throwable) {
                 // The page is dying; a failed last notice just leaves the archive until serve restarts.
             }
@@ -693,6 +704,7 @@ internal class KDevtoolsSession(
         for (index in 0 until commands.length()) {
             val command = commands.optJSONObject(index) ?: continue
             when (command.optString("type")) {
+                "edit" -> applyEdit(command)
                 "full" -> needFullSnapshot = true
                 "state" -> {
                     val ids = HashSet<Int>()
@@ -740,6 +752,31 @@ internal class KDevtoolsSession(
                 }
             }
         }
+    }
+
+    private fun applyEdit(command: JSONObject) {
+        val result = JSONObject().apply { put("requestId", command.optString("requestId")) }
+        try {
+            val id = command.optInt("id", -1)
+            val view = if (id == pager.nativeRef) pager else
+                pager.getViewWithNativeRef(id) as? DeclarativeBaseView<*, *> ?: error("View no longer exists")
+            val key = command.optString("key")
+            val value = command.opt("value")
+            when (command.optString("target")) {
+                "p" -> editProp(view, key, value)
+                "s" -> KDevtools.editState(view, key, value)
+                "as" -> KDevtools.editState(view.getViewAttr(), key, value)
+                else -> error("Unknown edit target")
+            }
+            stateNodeIds = stateNodeIds + id
+            needFullSnapshot = true
+            liveNeedsFrame = true
+            result.put("ok", true)
+        } catch (t: Throwable) {
+            result.put("ok", false)
+            result.put("error", t.message ?: "Edit failed")
+        }
+        editResults.add(result)
     }
 
     private fun safePageName(): String = try {

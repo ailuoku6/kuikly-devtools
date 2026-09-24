@@ -1,6 +1,7 @@
 import type {
   BodyBlobDto,
   DeviceCommand,
+  EditTarget,
   DeviceInfo,
   FullSessionState,
   LogDto,
@@ -83,6 +84,25 @@ export class DevtoolsStore {
   connection: ConnectionState = 'connecting';
 
   lastError: string | null = null;
+  private pendingEdits = new Map<string, { pagerId: string; finish: (error?: string) => void }>();
+
+  editNode(id: number, target: EditTarget, key: string, value: unknown): Promise<void> {
+    const pagerId = this.activePagerId;
+    if (!pagerId || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error('设备连接不可用'));
+    }
+    const requestId = `edit-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => finish('等待设备确认超时，请重新同步后检查实际值'), 20000);
+      const finish = (error?: string) => {
+        window.clearTimeout(timer);
+        this.pendingEdits.delete(requestId);
+        if (error) reject(new Error(error)); else resolve();
+      };
+      this.pendingEdits.set(requestId, { pagerId, finish });
+      this.sendCommand({ type: 'edit', requestId, id, target, key, value }, pagerId);
+    });
+  }
 
   /** When set, no socket is opened; `mock.ts` drives `handle()` directly. */
   mockMode = false;
@@ -147,6 +167,7 @@ export class DevtoolsStore {
       this.notify();
     };
     socket.onclose = () => {
+      for (const pending of this.pendingEdits.values()) pending.finish('连接已断开，请重新同步后检查实际值');
       this.connection = 'closed';
       this.socket = null;
       this.notify();
@@ -241,6 +262,9 @@ export class DevtoolsStore {
         this.autoSelect();
         break;
       case 'session-removed':
+        for (const pending of this.pendingEdits.values()) {
+          if (pending.pagerId === message.pagerId) pending.finish('页面已关闭');
+        }
         this.sessions.delete(message.pagerId);
         if (this.activePagerId === message.pagerId) {
           this.activePagerId = null;
@@ -252,6 +276,10 @@ export class DevtoolsStore {
         break;
       case 'delta':
         this.applyDelta(message);
+        for (const result of message.editResults ?? []) {
+          const pending = this.pendingEdits.get(result.requestId);
+          if (pending?.pagerId === message.pagerId) pending.finish(result.ok ? undefined : result.error || '修改失败');
+        }
         break;
       case 'cleared': {
         const session = this.sessions.get(message.pagerId);
@@ -266,6 +294,7 @@ export class DevtoolsStore {
         break;
       }
       case 'error':
+        if (message.requestId) this.pendingEdits.get(message.requestId)?.finish(message.message);
         this.lastError = message.message;
         break;
     }

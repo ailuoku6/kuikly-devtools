@@ -1,6 +1,7 @@
 'use strict';
 
 const { EventEmitter } = require('events');
+const { normalizeNode, prepareEdit } = require('./values');
 const { applyBlobs, dropBodyBuf, slimForDelta } = require('./blobs');
 const { SERVE_PATH_MARKER } = require('./ingest');
 
@@ -243,7 +244,7 @@ class Hub extends EventEmitter {
     // connected panel with a blank delta every eight seconds.
     if (payload.heartbeat === true &&
         changedNodes.length === 0 && removed.length === 0 && logs.length === 0 &&
-        network.length === 0 && native.length === 0 && !payload.screenshot &&
+        network.length === 0 && native.length === 0 && !payload.screenshot && !payload.editResults?.length &&
         !(Array.isArray(payload.blobs) && payload.blobs.length)) {
       return { commands };
     }
@@ -261,6 +262,7 @@ class Hub extends EventEmitter {
       native: native.map((record) => slimForDelta(session.native.get(record.id))).filter(Boolean),
     };
     if (payload.screenshot) delta.screenshot = payload.screenshot;
+    if (Array.isArray(payload.editResults)) delta.editResults = payload.editResults;
     if (Array.isArray(payload.blobs) && payload.blobs.length) delta.blobs = payload.blobs;
     this.emit('delta', delta);
 
@@ -346,7 +348,7 @@ class Hub extends EventEmitter {
     const isFull = payload.full === true;
     if (isFull) session.nodes.clear();
 
-    const changedNodes = Array.isArray(tree.nodes) ? tree.nodes : [];
+    const changedNodes = Array.isArray(tree.nodes) ? tree.nodes.map(normalizeNode) : [];
     for (const node of changedNodes) {
       session.nodes.set(node.id, node);
     }
@@ -445,6 +447,7 @@ class Hub extends EventEmitter {
   enqueueCommand(pagerId, command) {
     const session = this.sessions.get(pagerId);
     if (!session || !command || !command.type) return false;
+    if (command.type === 'edit') command = prepareEdit(session.nodes.get(command.id), command);
     if (command.type === 'state' && Array.isArray(command.ids)) {
       session.stateNodeIds = command.ids;
     }

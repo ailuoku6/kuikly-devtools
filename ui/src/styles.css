@@ -855,3 +855,43 @@ pre.payload {
   font-family: var(--mono);
   font-size: 10px;
 }
+
+
+.editing-notice { padding: 8px 10px; color: var(--text-dim); font-size: 12px; line-height: 1.6; border-bottom: 1px solid var(--border); }
+.kv > div.v .v-body.editable {
+  min-height: 18px;
+  border: 1px dashed transparent;
+  border-radius: 3px;
+  padding: 1px 3px;
+  cursor: text;
+}
+.kv > div.v .v-body.editable:hover,
+.kv > div.v .v-body.editable:focus-visible {
+  border-color: var(--accent);
+  background: var(--bg-hover);
+  outline: none;
+}
+.kv > div.v .v-body.editable.saving { cursor: progress; opacity: 0.7; }
+.value-input {
+  display: block;
+  box-sizing: border-box;
+  flex: 1 1 100%;
+  width: 100%;
+  min-width: 0;
+  min-height: 22px;
+  margin: 0;
+  padding: 1px 3px;
+  resize: vertical;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  line-height: inherit;
+  outline: none;
+}
+.edit-error { flex-basis: 100%; color: var(--red); white-space: pre-wrap; margin-top: 4px; font-size: 11px; }
+.edit-status { color: var(--text-dim); margin-left: 6px; font-size: 10px; }
+
+.inline-value-editor { width: 100%; min-width: 0; }
+.edit-hint { margin-top: 4px; color: var(--text-dim); font: 10px/1.6 var(--mono); white-space: normal; overflow-wrap: anywhere; }

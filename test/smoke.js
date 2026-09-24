@@ -182,7 +182,7 @@ async function run() {
     logs: [],
     network: [{ id: 'cb_1', status: 200, ok: true, cost: 132, rsp: '{"a":1}' }],
   });
-  assert.strictEqual(session.nodes.get(2).p.color, '#00FF00');
+  assert.strictEqual(session.nodes.get(2).p.color, '0xFF00FF00');
   // Request fields survive the merge with the completion payload.
   assert.strictEqual(session.network.get('cb_1').url, 'https://example.com/a');
   assert.strictEqual(session.network.get('cb_1').hdr, '{"Content-Type":"application/json"}');
@@ -281,6 +281,32 @@ async function run() {
   assert.strictEqual(snapshot.session.nodes.length, 1);
   assert.strictEqual(snapshot.session.device.platform, 'android');
   assert.ok(snapshot.session.screenshot.data.startsWith('data:image/png;base64,'));
+
+  // --- edits traverse WebSocket -> HTTP ingest -> device acknowledgement ---
+  const editableNode = node(1, -1, 'DivView', {
+    p: { backgroundColor: '4294901760' },
+    e: { p: { backgroundColor: 'String' } },
+  });
+  await post(INGEST_PORT, INGEST_PATH, { pagerId: '7', full: true, tree: { nodes: [editableNode] } });
+  const edit = { type: 'edit', requestId: 'ws-edit', id: 1, target: 'p', key: 'backgroundColor', value: '#80112233' };
+  socket.send(JSON.stringify({ type: 'command', pagerId: '7', command: edit }));
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  response = await post(INGEST_PORT, INGEST_PATH, { pagerId: '7', heartbeat: true });
+  assert.strictEqual(response.body.commands[0].value, '2148606515');
+  const confirmed = frames.waitFor((m) => m.type === 'delta' && m.editResults?.[0]?.requestId === 'ws-edit');
+  await post(INGEST_PORT, INGEST_PATH, {
+    pagerId: '7', full: true,
+    tree: { nodes: [{ ...editableNode, p: { backgroundColor: '2148606515' } }] },
+    editResults: [{ requestId: 'ws-edit', ok: true }],
+  });
+  const confirmation = await confirmed;
+  assert.strictEqual(confirmation.nodes[0].p.backgroundColor, '0x80112233');
+  assert.strictEqual(confirmation.editResults[0].ok, true);
+  const rejected = frames.waitFor((m) => m.type === 'error' && m.requestId === 'invalid-edit');
+  socket.send(JSON.stringify({ type: 'command', pagerId: '7', command: { ...edit, requestId: 'invalid-edit', key: 'readOnly' } }));
+  assert.match((await rejected).message, /read-only/);
+  const invalidHttp = await post(PANEL_PORT, '/api/command', { pagerId: '7', command: { ...edit, value: '#xyz' } });
+  assert.strictEqual(invalidHttp.status, 400);
 
   // --- malformed input must not take the server down ----------------------
   const bad = await post(INGEST_PORT, INGEST_PATH, { v: 1 }); // no pagerId

@@ -4,6 +4,8 @@ const fs = require('fs');
 const http = require('http');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
+const { randomBytes } = require('crypto');
+const { pageCommand } = require('./client/page-command');
 
 const {
   startServers,
@@ -98,6 +100,10 @@ function parseArgs(argv) {
       case '--status': options.status = next(); break;
       case '--kind': options.kind = next(); break;
       case '--id': options.id = next(); break;
+      case '--target': options.editTarget = next(); break;
+      case '--key': options.editKey = next(); break;
+      case '--value': options.editValue = next(); break;
+      case '--timeout-ms': options.timeoutMs = Number(next()); break;
       case '--force': options.force = true; break;
       case '--no-adb': options.adb = false; break;
       case '--copy-only': options.instrument = 'copy'; break;
@@ -448,12 +454,37 @@ async function commandInspect(options) {
     return 0;
   }
   if (!subject) {
-    fail('usage: kuikly-devtools inspect <sessions|logs|network|native|nodes|log-detail|network-detail|native-detail|node-detail> [options]');
+    fail('usage: kuikly-devtools inspect <sessions|logs|network|native|nodes|log-detail|network-detail|native-detail|node-detail|state|edit> [options]');
     process.exitCode = 1;
     return 1;
   }
-  const endpoint = inspectEndpoint(options, subject);
-  const body = await requestJson(options.panelPort, endpoint);
+  let body;
+  if (subject === 'edit' || subject === 'state') {
+    const id = Number(options.id);
+    if (!options.pagerId || options.id == null || !Number.isSafeInteger(id) || id < 0) {
+      throw new Error(`usage: inspect ${subject} --pager <pager-id> --id <node-id>`);
+    }
+    const timeoutMs = options.timeoutMs ?? 20000;
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 100 || timeoutMs > 120000) {
+      throw new Error('--timeout-ms must be between 100 and 120000');
+    }
+    let command;
+    if (subject === 'edit') {
+      if (!['p', 's', 'as'].includes(options.editTarget) || !options.editKey || options.editValue === undefined) {
+        throw new Error('usage: inspect edit --pager <id> --id <node-id> --target <p|s|as> --key <field> --value <JSON>');
+      }
+      let value;
+      try { value = JSON.parse(options.editValue); } catch (_) { throw new Error('--value must be valid JSON; wrap strings in JSON double quotes'); }
+      command = { type: 'edit', requestId: `cli-${randomBytes(12).toString('hex')}`, id,
+        target: options.editTarget, key: options.editKey, value };
+    } else {
+      command = { type: 'state', ids: [id] };
+    }
+    body = await pageCommand({ port: options.panelPort, pagerId: options.pagerId, command, timeoutMs });
+  } else {
+    const endpoint = inspectEndpoint(options, subject);
+    body = await requestJson(options.panelPort, endpoint);
+  }
   const text = JSON.stringify(body);
   if (Buffer.byteLength(text) <= INSPECT_INLINE_MAX_BYTES) {
     log(text);
@@ -541,7 +572,7 @@ Commands
   build-js     Start or reuse DevTools, then build the instrumented JS debug artifact
   build-apk    Build the instrumented hot-reload debug APK (Android) and start DevTools
   gradle       Start or reuse DevTools, then run arbitrary instrumented Gradle tasks
-  inspect      Search live page sessions, logs, network, native calls, and nodes for AI-assisted debugging
+  inspect      Search live page data, fetch component state, or edit writable node fields
   init-skill   Install the page-inspection Skill for Codex, Claude Code, and Cursor in this project
   doctor       Print resolved paths, ports and network addresses
   help         Show this message
@@ -561,6 +592,10 @@ Options
   --query, --q <text>   Text filter for \`inspect\` searches
   --limit <n>           Maximum \`inspect\` results per page (default: 50, maximum: 200)
   --offset <n>          \`inspect\` result offset for pagination
+  --target <p|s|as>     Field group for inspect edit (props, view state, attr state)
+  --key <field>        Field name for inspect edit
+  --value <JSON>       New value for inspect edit; strings require JSON double quotes
+  --timeout-ms <n>     Device confirmation timeout for edit/state (default: 20000)
   --force              Replace existing files when running \`init-skill\`
 
 Examples
@@ -570,6 +605,8 @@ Examples
   npx kuikly-devtools inspect logs --pager 7 --query timeout
   npx kuikly-devtools inspect network-detail --pager 7 --id cb_42
   npx kuikly-devtools inspect native --pager 7 --query CalendarModule
+  npx kuikly-devtools inspect state --pager 7 --id 42
+  npx kuikly-devtools inspect edit --pager 7 --id 42 --target p --key width --value '120'
   npx kuikly-devtools init-skill --project .
 `);
   return 0;

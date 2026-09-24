@@ -210,6 +210,20 @@ class SourceInstrumentorTest {
         results.forEach { assertFalse(it.changed, "unexpected change in ${it.relativePath}") }
     }
 
+    @Test
+    fun `editors include private and delegated vars but protect vals`() {
+        val result = single("""
+            class Editable(private var count: Int, val fixed: String) : ComposeAttr() {
+                private var accent: Color? = null
+                var enabled: Boolean by observable(false)
+            }
+        """.trimIndent())
+        assertTrue(result.text.contains("registerStateEditor(this, \"count\", \"Int\", {"))
+        assertTrue(result.text.contains("registerStateEditor(this, \"fixed\", \"String\", null)"))
+        assertTrue(result.text.contains("editValue(this.`accent`, __kdtValue, \"Color?\")"))
+        assertTrue(result.text.contains("this.`enabled` ="))
+    }
+
     // --------------------------------------------------------------------- println
 
     @Test

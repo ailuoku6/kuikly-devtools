@@ -69,6 +69,7 @@ class SourceInstrumentor(private val classIndex: Map<String, ClassShape>) {
                 val properties = dumpableProperties(klass)
                 if (properties.isNotEmpty()) {
                     statements += stateRegistration(properties)
+                    statements += editorRegistration(klass, properties)
                     stateClasses += name
                 }
             }
@@ -179,6 +180,25 @@ class SourceInstrumentor(private val classIndex: Map<String, ClassShape>) {
             append("$AGENT.tryPut($STATE_LOCAL, ${name.quoted()}) { this.$name }; ")
         }
         append("$STATE_LOCAL } }")
+    }
+
+    private fun editorRegistration(klass: KtClass, names: List<String>): String = buildString {
+        append("init { ")
+        for (name in names) {
+            val property = klass.body?.properties?.find { it.name == name }
+            val parameter = klass.primaryConstructor?.valueParameters?.find { it.name == name }
+            val writable = property?.isVar ?: (parameter?.valOrVarKeyword?.text == "var")
+            val hint = (property?.typeReference ?: parameter?.typeReference)?.text.orEmpty()
+                .replace("\n", " ").replace("\r", " ").trim()
+            append("$AGENT.registerStateEditor(this, ${name.quoted()}, ${hint.quoted()}, ")
+            if (writable) {
+                append("{ __kdtValue -> this.`$name` = $AGENT.editValue(this.`$name`, __kdtValue, ${hint.quoted()}) }")
+            } else {
+                append("null")
+            }
+            append("); ")
+        }
+        append("}")
     }
 
     /** Appends to the very end of the class body, after all property initialisers have run. */

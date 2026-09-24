@@ -31,6 +31,8 @@ object KDevtools {
      * detaches; in a debug-only build that is an acceptable trade for cross-target portability.
      */
     private val stateDumpers = LinkedHashMap<Any, MutableList<() -> Map<String, Any?>>>()
+    private class StateEditor(val hint: String, val write: ((Any?) -> Unit)?)
+    private val stateEditors = LinkedHashMap<Any, MutableMap<String, StateEditor>>()
     private const val MAX_STATE_DUMPERS = 20000
 
     /**
@@ -76,6 +78,7 @@ object KDevtools {
             sessions.remove(pagerId)?.detach()
             if (sessions.isEmpty()) {
                 stateDumpers.clear()
+                stateEditors.clear()
             }
         } catch (t: Throwable) {
             agentLog(LEVEL_ERROR, "detachPager($pagerId) failed: $t")
@@ -130,6 +133,34 @@ object KDevtools {
     }
 
     internal fun hasState(owner: Any): Boolean = stateDumpers.containsKey(owner)
+
+    /** Generated inside the declaring class so private and observable setters work on every target. */
+    fun registerStateEditor(owner: Any, name: String, hint: String, write: ((Any?) -> Unit)?) {
+        if (!KDevtoolsConfig.ENABLED || !stateDumpers.containsKey(owner)) return
+        stateEditors.getOrPut(owner) { LinkedHashMap() }[name] = StateEditor(hint, write)
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    fun <T> editValue(current: T, value: Any?, hint: String = ""): T = coerceEdit(current, value, hint) as T
+
+    internal fun editableState(owner: Any, values: Map<String, Any?>): Map<String, String> {
+        val result = LinkedHashMap<String, String>()
+        for ((name, editor) in stateEditors[owner] ?: return result) {
+            if (editor.write == null || !values.containsKey(name)) continue
+            val value = values[name]
+            if (value is String && value.startsWith(UNREADABLE_PREFIX)) continue
+            editType(value, editor.hint)?.let { result[name] = it }
+        }
+        return result
+    }
+
+    internal fun editState(owner: Any, name: String, value: Any?) {
+        val values = dumpState(owner) ?: error("No state available")
+        require(editableState(owner, values).containsKey(name)) { "Read-only or unsupported state: $name" }
+        val editor = stateEditors[owner]?.get(name) ?: error("No setter")
+        editor.write?.invoke(value) ?: error("Read-only state")
+    }
+
 
     // ------------------------------------------------------------------- log hooks
 

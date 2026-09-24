@@ -9,7 +9,7 @@ logs and network traffic — all streaming into a browser panel while the page r
 Instrumentation is **opt-in**. Without the flag your build is byte-for-byte unchanged: no source is
 touched, no dependency is added, no instrumented code can reach a release artifact.
 
-## Quick start
+## One command to bring debugging to your Kuikly pages
 
 From a Kuikly business project root (the directory containing `gradlew`), run one of these commands.
 Each command starts or reuses the DevTools server and browser panel automatically; 
@@ -307,3 +307,26 @@ git push origin v0.1.3
 
 The tag must be `v` plus the version in `package.json`. GitHub Actions runs tests, builds the
 instrumentor jar and panel, then `npm publish`.
+
+## Editing properties and state
+
+Select a node in Elements or Components and click a writable property/state value to edit it inline. Editable values show a dashed border on hover. Enter or blur applies the value; Escape cancels, and Shift+Enter inserts a newline. Invalid input or a rejected edit restores the device value and displays the reason. Read-only values never open an editor, and unchanged values are not submitted. Fetch component members before editing state.
+
+Existing render properties, sizes, margin/padding, flex and layout enums are editable. Instrumented mutable view/attr members support primitive types and `Color`, including private, observable and custom setters. Immutable members, uninitialized fields, complex objects/collections and values that cannot be transferred losslessly remain read-only. Explicitly nullable primitive/Color fields accept `null`.
+
+Colors accept `0xAARRGGBB`, `#RRGGBB`, `#AARRGGBB`, or decimal values. Eight-digit colors are ARGB. The server formats incoming colors and converts edits to the original decimal string, signed Int, Long or Color numeric representation; the runtime only constructs the Kuikly Color instance. Native color tokens are also supported for String/Color fields.
+
+Every screenshot upload includes the latest complete tree in the same ingest packet. Tree collection happens at upload time; native capture is asynchronous, so this is not a pixel-atomic snapshot. Edits affect the live page only and may be overwritten by later application updates. Rebuild with instrumentation and reopen the page after upgrading; older agents remain viewable without editing controls.
+
+## Let AI edit live properties and state
+
+The bundled `kuikly-page-inspect` skill can locate a node, inspect its writable types and apply live edits. Update an existing project skill with `npx kuikly-devtools init-skill --force` (this replaces local customizations to that skill).
+
+```bash
+npx kuikly-devtools inspect node-detail --pager 7 --id 42
+npx kuikly-devtools inspect state --pager 7 --id 42
+npx kuikly-devtools inspect edit --pager 7 --id 42 --target p --key width --value '120'
+npx kuikly-devtools inspect edit --pager 7 --id 42 --target p --key backgroundColor --value '"#80FF0000"'
+```
+
+Targets are `p` (properties), `s` (view state), and `as` (attr state). `--value` accepts JSON. The CLI waits for device confirmation and returns actual readback when available; failures exit nonzero. After a timeout, read the node before retrying because the edit may still apply. Edits affect the live page only. Inline editors show allowed values/formats for enums, booleans, colors, spacing and numeric types.

@@ -192,3 +192,11 @@ Android 默认通过 `adb reverse tcp:8089 tcp:8089` 访问本机；iOS 和鸿�
 - 截图点选使用可视坐标（布局 `f` − 祖先 `ScrollerView` 的 `so`，再叠 `p.transform`）。不是 `ScrollerView` 子类的自定义滚动容器没有 `so`，点选仍可能偏差
 - 插桩源码是副本；行号与原文件一致，但修改副本不会影响下一次构建
 - `SliderAttr.padding` 覆盖了容器 padding 且不写回 FlexNode，因此滑块的 padding 不会出现在 `p` 里
+
+## 属性与状态回写
+
+`src/server/values.js` 统一处理颜色显示和编辑入参转换；Hub 缓存与对外 API 均保存规范化后的节点，`e` 保留原始可写类型。runtime 的 `KDevtoolsEditing.kt` 负责基础类型重建、Color 构造及 Attr/FlexNode 写入。插桩器在类内为 var 生成 setter 闭包，避免 KMP 反射；val 注册只读占位，保持继承同名字段的覆盖语义。成功修改后刷新树，`requestId/editResults` 连接面板 pending 状态与设备实际结果。
+
+截图全量发送通过 `collect(includeAll=true)` 完成；TreeDelta.changed 只统计真实变化，避免读取 state 或附带完整树触发无限实时截图。线上 `tree.changed` 仍是本次传输节点数。
+
+2026-09-25：状态订阅会使每次采样都有节点数据上传，tick 中 upload 后立即调用 pumpLiveShot 总会被 uploadInFlight 拦截。新增上传成功回调中的 pumpLiveShot，保留并发和速率保护，避免编辑后实时截图饥饿。测试通过注入 sendPayload 延迟完成传输，覆盖连续编辑/持续上传和主动暂停。CLI 使用 src/client/page-command.js 等待设备回执，skill 明确读取 Node.e 后再修改，不把排队当作成功、不自动重试超时编辑。

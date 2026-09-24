@@ -216,3 +216,19 @@ WebSocket：`ws://localhost:<panelPort>/ws`
 4. 同步本文档和 [PROTOCOL.md](PROTOCOL.md)
 
 漏掉第 2 或第 3 步，`npm test` 会直接失败，而不是让你在面板上看到一片空白。
+
+## 编辑与颜色规范化（v1 可选扩展）
+
+- 节点增加 `e: {p?: {字段: 类型}, s?: {...}, as?: {...}}`，仅列出可写字段。`s/as` 元数据随按需状态一起采集。基础类型为 `String/Boolean/Byte/Short/Int/Long/Float/Double/Char/Color`，可空类型加 `?`；布局间距为 `space`，布局枚举为 `enum:VALUE1,VALUE2`。缺少 `e` 的旧节点只读。
+- 页面上报 `p/s/as` 原始 JSON 安全值。Color 使用其原始十进制或 token 字符串；页面不再转换为十六进制。Hub 统一转换颜色字段和类型为 Color 的成员，向面板、HTTP 检索和会话快照输出 `0xAARRGGBB`。非颜色字段不变。
+- 命令：`{"type":"edit","requestId":"唯一请求 ID","id":123,"target":"p|s|as","key":"字段","value":新值}`。WebSocket `command` 或 POST `/api/command` 提交。server 检查节点、可写信息和类型，恢复颜色的原始表示后排队。编辑命令不会合并；提交成功表示已排队，不表示设备已应用。
+- 设备后续 ingest 带 `editResults: [{requestId, ok, error?}]`；成功后请求完整树刷新，并订阅该节点状态。结果与最新节点数据一起转发到 delta，上传失败时重试结果。WebSocket 入参错误返回 `{type:"error",message,requestId}`，HTTP 返回 400。
+- 随截图上传的包 `full:true`，`tree.nodes` 为上传时采集的全量树；`changed` 表示本包节点数。为避免重复触发截图，runtime 单独计算实际变化数，全量发送本身不使实时截图变脏。截图与树不是原子采样；图片由此前的异步 `toImage` 返回。
+
+### CLI 编辑与状态读取
+
+`inspect edit --pager <pagerId> --id <nativeRef> --target <p|s|as> --key <field> --value <JSON>` 使用 WebSocket 下发唯一 requestId 的 edit 命令并等待设备回执；输出 `{pagerId,requestId,ok:true,id,target,key,value}` 中 value 为同一 delta 中的实际节点值。若回执无对应字段则返回 `readbackUnavailable:true`。校验失败、设备失败、页面关闭和超时均以非零状态退出；不自动重试。`--timeout-ms` 默认 20000，范围 100–120000。
+
+`inspect state --pager <pagerId> --id <nativeRef>` 下发 state 命令，等待设备 delta 中的 s/as 和 e 信息；返回 `{pagerId,node}`。沿用 state 语义，会替换当前会话的状态订阅列表。两种命令沿用 15 KiB 输出分流规则。
+
+实时截图同时在采样 tick 与上传成功回调调度；后者确保状态持续上传时仍能获得空闲截图机会。两处均受同一个 live 开关、截图 in-flight 和间隔限制约束。

@@ -6,7 +6,7 @@
 
 插桩是**可选开关**。不带开关时构建产物与今天完全一致：业务源码一行不改，不新增任何依赖，插桩代码不可能进入发布产物。
 
-## 最基础用法
+## 一行命令，让 Kuikly 页面拥有调试能力
 
 在 Kuikly 业务工程根目录（能找到 `gradlew`）执行下面其中一条命令即可。
 
@@ -89,6 +89,22 @@ npx kuikly-devtools inspect node-detail --pager 7 --id 42
 ```bash
 npx kuikly-devtools inspect clean-temp
 ```
+
+### 让 AI 修改页面属性与状态
+
+`kuikly-page-inspect` 现在支持定位节点、读取可写类型并修改页面。已有 skill 可在业务工程根目录执行 `npx kuikly-devtools init-skill --force` 更新（会覆盖该 skill 的本地自定义内容）。
+
+```bash
+# 获取节点详情及 e 中的可写字段；组件状态需先拉取
+npx kuikly-devtools inspect node-detail --pager 7 --id 42
+npx kuikly-devtools inspect state --pager 7 --id 42
+
+# p = 属性，s = view 状态，as = attr 状态；--value 使用 JSON
+npx kuikly-devtools inspect edit --pager 7 --id 42 --target p --key width --value '120'
+npx kuikly-devtools inspect edit --pager 7 --id 42 --target p --key backgroundColor --value '"#80FF0000"'
+```
+
+编辑命令会等待设备回执并返回实际读取的值，失败退出非零；超时不代表未执行，重试前应先读取节点。修改只作用于当前页面内存。编辑输入框也会显示字段的合法值或格式提示，包括枚举、布尔、颜色、间距和数值范围。
 
 ### 参数
 
@@ -219,3 +235,14 @@ git push origin v0.1.3
 ```
 
 tag 必须是 `v` + `package.json` 里的版本号，GitHub Actions 会跑测试、构建插桩 jar 和面板，并通过 GitHub OIDC 执行 `npm publish`。
+
+## 实时编辑属性与状态
+
+在「元素」或「组件」中选择节点后，点击右侧可写的属性值或状态值即可原位输入；可编辑值在鼠标悬停时显示虚线边框。回车或失去焦点自动应用，Esc 取消，Shift+Enter 换行。非法输入或设备拒绝修改时退出输入框，恢复显示设备的合法值并提示原因。只读值不会进入输入框，未改动的值不会提交。状态先通过「拉取成员变量」读取。
+
+- 支持已有的渲染属性、尺寸、margin/padding、flex 和布局枚举；组件 view/attr 中可写的基础类型与 `Color` 成员会生成 setter，包含 private、observable 和自定义 setter。
+- `val`、未初始化字段、复杂对象/集合、过长或无法无损传输的值保持只读。nullable 基础类型在源码显式标注可空时支持写入 `null`。
+- 颜色可输入 `0xAARRGGBB`、`#RRGGBB`、`#AARRGGBB` 或十进制；8 位格式的前两位是 alpha。服务端负责显示格式及回写转换，按原类型恢复十进制字符串、signed Int、Long 或 Color 的数值；运行时仅负责构造 Kuikly `Color` 实例。原生颜色 token 也可用于字符串或 Color 字段。
+- 截图上传时会在同一个 ingest 包附带最新完整节点树；树采集发生在上传时，原生截图是异步生成，两者不是像素级原子快照。
+
+修改只影响当前页面内存，不会改业务源码；后续业务状态更新可能覆盖手动设置的属性。升级后需要重新进行插桩编译并重新打开页面，旧包仍可查看，但不会出现编辑入口。
