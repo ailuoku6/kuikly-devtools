@@ -232,3 +232,15 @@ WebSocket：`ws://localhost:<panelPort>/ws`
 `inspect state --pager <pagerId> --id <nativeRef>` 下发 state 命令，等待设备 delta 中的 s/as 和 e 信息；返回 `{pagerId,node}`。沿用 state 语义，会替换当前会话的状态订阅列表。两种命令沿用 15 KiB 输出分流规则。
 
 实时截图同时在采样 tick 与上传成功回调调度；后者确保状态持续上传时仍能获得空闲截图机会。两处均受同一个 live 开关、截图 in-flight 和间隔限制约束。
+
+### 支持属性查询与新增（propSchemaV1）
+
+服务端 WebSocket hello 和设备 ingest/会话摘要通过 `capabilities:["propSchemaV1"]` 声明新能力，旧 `Node.e` 保持不变。`inspectProps` 命令 `{type:"inspectProps",id,requestId}` 按需查询设备；结果以 `propSchemaResults` 上传，并仅在请求客户端的 delta 中转发。结果包含 `{requestId,ok,id,schemaVersion:1,schemaToken,properties,reason?}`；失败含 error/code。properties 描述 key/inputType/wireType/group/description、范围/枚举，以及 reported/readable/currentValue。reported 仅表示当前树是否展示，不表示源码是否声明。
+
+新编辑模式 `{type:"edit",mode:"setSupported",schemaToken,id,target:"p",key,value,requestId}` 允许设置支持的属性，不要求旧 p/e 包含该键。server 使用设备返回的 schema 校验并将用户颜色转换为 UInt32 ARGB 数值；设备再次校验 token、节点身份、当前支持性及范围，通过正式 Kuikly setter 写入。数字颜色不接受主题 token，Boolean 输入使用 true/false；状态 s/as 不支持新增。设备不支持新能力时拒绝，不静默降级。省略 mode 仍使用原有编辑协议。
+
+schemaToken 绑定设备会话及节点对象实例，在节点移除/替换、页面重建后失效；单纯传输断开不改变仍存活对象的 token，但客户端重连需重新查询，server 重启会清空 schema 缓存。普通值变化不改变 token。当前是最后执行的写入生效，不提供 CAS。
+
+成功 editResults 可含 `readback:{key,inputType,readable,value?,reported}`，值由设备执行后读取，server 格式化颜色，CLI 优先使用该值。设备记录本次会话已触达的属性键，后续树采集补充其实际默认布局值，保持旧 p/e 的存储类型。不会缓存输入作为假回读。setter 失败时也刷新树；异常不承诺事务回滚。非法值在 setter 前拒绝。
+
+`inspect props --pager <id> --id <node>` 查询上述能力；`inspect edit ... --set-supported` 先查询新 schema，再发送一次设置并等待确认。沿用输出大小限制与超时不重试规则。新增入口不支持虚拟节点、未知属性、动态新增成员、删除属性或恢复到未设置。

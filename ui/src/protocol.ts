@@ -171,6 +171,7 @@ export interface DeviceInfo {
 }
 
 export interface SessionSummary {
+  capabilities?: string[];
   pagerId: string;
   page: string;
   className: string;
@@ -199,9 +200,20 @@ export interface FullSessionState extends SessionSummary {
 
 export type EditTarget = 'p' | 's' | 'as';
 export type EditHandler = (target: EditTarget, key: string, value: unknown) => Promise<void>;
+export interface PropDefinition {
+  key: string; inputType: 'color' | 'number' | 'boolean' | 'string' | 'enum' | 'space';
+  wireType: string; group: string; description: string; enumValues?: string[];
+  min?: number; max?: number; exclusiveMin?: boolean; reported: boolean;
+  readable: boolean; currentValue?: unknown; examples?: string[];
+}
+export interface PropSchemaResult {
+  requestId: string; ok: boolean; id: number; schemaVersion: number; schemaToken: string;
+  properties: PropDefinition[]; reason?: string; error?: string;
+}
 export interface EditResult { requestId: string; ok: boolean; error?: string }
 
 export interface DeltaMessage {
+  propSchemaResults?: PropSchemaResult[];
   editResults?: EditResult[];
   type: 'delta';
   pagerId: string;
@@ -218,7 +230,7 @@ export interface DeltaMessage {
 }
 
 export type ServerMessage =
-  | { type: 'hello'; sessions: SessionSummary[] }
+  | { type: 'hello'; capabilities?: string[]; sessions: SessionSummary[] }
   | { type: 'snapshot'; session: FullSessionState }
   | DeltaMessage
   | { type: 'session-added'; summary: SessionSummary }
@@ -227,7 +239,8 @@ export type ServerMessage =
   | { type: 'error'; message: string; requestId?: string };
 
 export type DeviceCommand =
-  | { type: 'edit'; requestId: string; id: number; target: EditTarget; key: string; value: unknown }
+  | { type: 'inspectProps'; id: number; requestId: string }
+  | { type: 'edit'; mode?: 'setSupported'; schemaToken?: string; requestId: string; id: number; target: EditTarget; key: string; value: unknown }
   | { type: 'full' }
   | { type: 'state'; ids: number[] }
   | { type: 'sample'; value: number }
@@ -239,3 +252,9 @@ export type DeviceCommand =
 export const LIVE_SHOT_INTERVAL_MS = 2000;
 /** Default sampleSize for live frames (larger = fewer pixels, cheaper encode). */
 export const LIVE_SHOT_SAMPLE = 2;
+
+export interface SupportedPropHandlers {
+  canSetSupported: boolean;
+  onQueryProps: (id: number) => Promise<PropSchemaResult>;
+  onSetSupported: (id: number, key: string, value: unknown, schemaToken: string) => Promise<void>;
+}

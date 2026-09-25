@@ -69,3 +69,39 @@ try {
   assert.throws(() => hub.enqueueCommand('edit-page', { ...commands[0] }), /missing node/);
 } finally { hub.close(); }
 console.log('editing: ok');
+
+// No old value/type is available: the device schema is the only authority.
+const { prepareSupportedEdit, normalizeSchema, normalizeEditResult } = require('../src/server/values');
+const schema = { id: 2, schemaVersion: 1, schemaToken: 'sid:1', properties: [
+  { key: 'backgroundColor', inputType: 'color', wireType: 'argb32' },
+  { key: 'visibility', inputType: 'boolean', wireType: 'Boolean' },
+  { key: 'opacity', inputType: 'number', min: 0, max: 1 },
+  { key: 'fontSize', inputType: 'number', min: 0, exclusiveMin: true },
+  { key: 'padding', inputType: 'space', min: 0 },
+  { key: 'alignItems', inputType: 'enum', enumValues: ['CENTER', 'STRETCH'] },
+] };
+const absent = { id: 2, p: {}, e: { p: {} } };
+const supported = (key, value, overrides = {}) => prepareSupportedEdit(absent,
+  { type: 'edit', mode: 'setSupported', id: 2, target: 'p', requestId: 'add', schemaToken: 'sid:1', key, value, ...overrides }, schema);
+assert.equal(supported('backgroundColor', '#80C8FF').value, 4286630143);
+assert.equal(supported('backgroundColor', '#00112233').value, 1122867);
+assert.equal(supported('visibility', false).value, false);
+assert.deepEqual(supported('padding', {}).value, {});
+for (const [key, value] of [['backgroundColor', 'theme-token'], ['opacity', 1.1], ['fontSize', 0],
+  ['fontSize', 1e40], ['visibility', 1], ['padding', { top: 5, right: -1 }], ['padding', { top: null }],
+  ['padding', { unknown: 1 }], ['alignItems', 'made-up'], ['unknown', 1]]) assert.throws(() => supported(key, value));
+assert.throws(() => supported('opacity', 0.5, { schemaToken: 'old' }), /SCHEMA_EXPIRED/);
+assert.throws(() => supported('opacity', 0.5, { target: 's' }));
+assert.equal(normalizeSchema({ properties: [{ key: 'color', inputType: 'color', currentValue: '2148606515' }] }).properties[0].currentValue, '0x80112233');
+assert.equal(normalizeEditResult({ readback: { key: 'visibility', value: false } }).readback.value, false);
+const schemaHub = new Hub();
+try {
+  schemaHub.ingest({ pagerId: 'p', sid: 'one', full: true, tree: { nodes: [absent] } });
+  assert.throws(() => schemaHub.enqueueCommand('p', { type: 'inspectProps', id: 2, requestId: 'q' }), /rebuild/);
+  schemaHub.ingest({ pagerId: 'p', sid: 'one', capabilities: ['propSchemaV1'], propSchemaResults: [{ ...schema, ok: true }] });
+  schemaHub.enqueueCommand('p', { ...supported('opacity', 0.5) });
+  assert.equal(schemaHub.ingest({ pagerId: 'p', sid: 'one' }).commands[0].value, 0.5);
+  schemaHub.ingest({ pagerId: 'p', sid: 'two', full: true, capabilities: ['propSchemaV1'], tree: { nodes: [absent] } });
+  assert.throws(() => schemaHub.enqueueCommand('p', { ...supported('opacity', 0.5) }), /SCHEMA_EXPIRED/);
+} finally { schemaHub.close(); }
+console.log('supported property validation: ok');

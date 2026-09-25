@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react';
-import type { EditTarget, NodeDto, ScreenshotDto } from '../protocol';
+import type { SupportedPropHandlers, EditTarget, NodeDto, ScreenshotDto } from '../protocol';
 import { buildRows } from '../tree';
 import { Inspector, ScreenshotPane } from './Inspector';
 import { VirtualTree } from './VirtualTree';
 
-interface Props {
+interface Props extends SupportedPropHandlers {
   onEdit: (id: number, target: EditTarget, key: string, value: unknown) => Promise<void>;
   nodes: Map<number, NodeDto>;
   composeOnly: boolean;
@@ -30,6 +30,7 @@ export function ElementsPanel({
   onCapture,
   onLive,
   onEdit,
+  ...supportedHandlers
 }: Props) {
   const [query, setQuery] = useState('');
   const [collapsed, setCollapsed] = useState<Set<number>>(() => new Set());
@@ -118,6 +119,7 @@ export function ElementsPanel({
       </div>
       <div className="split-right">
         <Inspector
+          {...supportedHandlers}
           key={selectedId}
           onEdit={(target, key, value) => selected ? onEdit(selected.id, target, key, value) : Promise.reject(new Error('未选择节点'))}
           node={selected}

@@ -23,7 +23,7 @@ internal class TreeDelta(
  * (flattened) containers and `ComposeView` boundaries stay visible — that is what makes the panel's
  * component hierarchy match the DSL the developer actually wrote.
  */
-internal class KDevtoolsTree(private val pager: Pager) {
+internal class KDevtoolsTree(private val pager: Pager, private val propSchema: KDevtoolsPropSchema? = null) {
 
     private val lastSerialized = HashMap<Int, String>()
     private var aliveIds = HashSet<Int>()
@@ -80,6 +80,7 @@ internal class KDevtoolsTree(private val pager: Pager) {
                 lastSerialized.remove(id)
             }
         }
+        propSchema?.prune(alive)
         aliveIds = alive
 
         return TreeDelta(nodes, removed, total, changed)
@@ -146,7 +147,8 @@ internal class KDevtoolsTree(private val pager: Pager) {
         } catch (t: Throwable) {
             null
         }
-        val props = collectViewProps(view, attr)
+        val props = collectViewProps(view, attr).toMutableMap()
+        propSchema?.supplement(view, props)
         json.put("p", KDevtoolsJson.objectOf(props))
         val editable = JSONObject()
         editable.put("p", KDevtoolsJson.objectOf(editableProps(props)))

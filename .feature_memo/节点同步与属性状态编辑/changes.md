@@ -38,3 +38,11 @@
 - README 标题：中文“一行命令，让 Kuikly 页面拥有调试能力”；英文“One command to bring debugging to your Kuikly pages”。补充 CLI 用法、中英文协议及架构解释。
 - 验证：npm test 全部通过，含实际 HTTP/WebSocket + CLI 子进程测试（数值、颜色转换、state、状态编辑、非法值拒绝、自定义 setter 拒绝、超时不重试）；真实 Kuikly JVM 回归通过；UI TypeScript/Vite build 通过；skill quick_validate.py 通过。
 - 本次 runtime 修复需要重新插桩编译并加载设备产物；UI dist 已构建。未做移动端真机截图视觉验证。
+
+## 2026-09-25 支持新增未声明 Attr 属性
+
+- 实现运行时白名单、schema 查询与实例 token、颜色/布尔正式 setter、布局与文本重测量、默认值树补充及直接回读；支持注册字段后续编辑，旧协议兼容。
+- 面板添加属性（搜索/分组/合法值提示），Enter/blur 单次提交、Esc/IME 保护；CLI inspect props / edit --set-supported；同步 skill、中英文 README/PROTOCOL。
+- 已通过：真实 Kuikly common/JVM 编译及运行回归（包含新增属性/非法值/精确回读/token/Session 命令/实时截图）、server 类型校验、真实 page-command+hub 离线链路、真实 panel 查询路由（含跨连接重复 requestId 隔离）、组件事件逻辑、TypeScript/Vite 构建、skill 校验、协议/hit-test/blobs/curl 及 diff 检查。
+- 本轮早期 npm test 全套曾通过；新增 inspect 集成场景后，最终真实端口测试受限：node test/inspect.js 无法绑定端口，自动审批返回 503，未执行提权操作。离线测试不替代真实网络集成。浏览器工具禁止 file:// 测试页，未做视觉走查；未做 Android/iOS 真机渲染验证。
+- runtime 通过 Gradle 直接包含源码，无需更改插桩器 JAR；业务需重新构建并加载。尚未重启用户服务、重新构建业务或覆盖外部已安装 skill。

@@ -251,3 +251,16 @@ tag 必须是 `v` + `package.json` 里的版本号，GitHub Actions 会跑测试
 
 - [ ] Mock 网络数据返回。
 - [ ] Mock 原生调用返回。
+
+### 新增 attr 中没有写的属性
+
+选择节点后，在右侧「属性」区点击 **＋ 添加属性**，搜索并选择当前节点支持的属性，输入值后回车或失焦应用。合法值和格式会就近显示；未输入不会提交，Esc 取消。成功后属性成为普通可点击编辑的行。非法输入不会写入；新增行没有原值时清空草稿并提示原因。
+
+支持基础外观（背景色、透明度、可见性、触摸开关）、尺寸与 Flex 布局、TextAttr 的文本/颜色/字号。虚拟节点、复杂渐变/变换、动态新增状态成员暂不支持。颜色在 server 内转换，八位颜色按 AARRGGBB；新增模式不接受主题 token。修改为默认布局值后仍能看到真实回读。
+
+```bash
+npx kuikly-devtools inspect props --pager 7 --id 42
+npx kuikly-devtools inspect edit --pager 7 --id 42 --target p --key backgroundColor --value '"#80C8FF"' --set-supported
+```
+
+`--set-supported` 会先查询设备支持能力再发送一次设置，并等待设备确认。默认 `inspect edit` 保留只修改已上报可写字段的行为。节点编号使用最新查询结果；按钮背景通常要选择文本的父容器。升级后重启 server、刷新面板，并重新插桩构建/加载业务页面；只有更新 server 不足以启用这项能力。已有项目可用 `init-skill --force` 更新 AI skill（会覆盖该 skill 的本地自定义）。

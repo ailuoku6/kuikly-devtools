@@ -6,6 +6,7 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const WebSocket = require('ws');
 
 const { startServers, INGEST_PATH } = require('../src');
 const { isPortFree } = require('../src/util/net');
@@ -128,19 +129,30 @@ async function run() {
       p: { width: 100, backgroundColor: '4294901760', hint: 'Search' },
       e: { p: { width: 'Float', backgroundColor: 'String', hint: 'String' } } };
     servers.hub.ingest({ pagerId: 'inspect-1', tree: { nodes: [liveNode] } });
+    let schemaResults = [];
     let acknowledgements = [];
+    servers.hub.ingest({ pagerId: 'inspect-1', capabilities: ['propSchemaV1'] });
+    const observer = new WebSocket(`ws://127.0.0.1:${PANEL_PORT}/ws`);
+    const leakedSchemas = [];
+    observer.on('message', (raw) => { const msg = JSON.parse(raw); if (msg.propSchemaResults?.length) leakedSchemas.push(msg); });
     const applied = [];
     const poller = setInterval(() => {
-      const reply = servers.hub.ingest({ pagerId: 'inspect-1', tree: { nodes: [liveNode] }, editResults: acknowledgements });
+      const reply = servers.hub.ingest({ pagerId: 'inspect-1', tree: { nodes: [liveNode] }, editResults: acknowledgements, propSchemaResults: schemaResults });
+      schemaResults = [];
       acknowledgements = [];
       for (const command of reply.commands) {
-        if (command.type === 'edit') {
+        if (command.type === 'inspectProps') {
+          schemaResults.push({ requestId: command.requestId, ok: true, id: 7, schemaVersion: 1, schemaToken: 'test-node-7', properties: [
+            { key: 'color', inputType: 'color', wireType: 'argb32', reported: false },
+            { key: 'visibility', inputType: 'boolean', wireType: 'Boolean', reported: false },
+          ] });
+        } else if (command.type === 'edit') {
           applied.push(command);
           if (command.value === 'reject-me') {
             acknowledgements.push({ requestId: command.requestId, ok: false, error: 'Custom setter rejected value' });
           } else {
             liveNode = { ...liveNode, [command.target]: { ...liveNode[command.target], [command.key]: command.value } };
-            acknowledgements.push({ requestId: command.requestId, ok: true });
+            acknowledgements.push({ requestId: command.requestId, ok: true, ...(command.mode ? { readback: { key: command.key, inputType: command.key === 'color' ? 'color' : 'boolean', readable: true, value: command.value } } : {}) });
           }
         } else if (command.type === 'state') {
           liveNode = { ...liveNode, s: { enabled: true }, e: { ...liveNode.e, s: { enabled: 'Boolean' } } };
@@ -149,6 +161,18 @@ async function run() {
     }, 20);
     const editArgs = ['edit', '--pager', 'inspect-1', '--id', '7', '--target', 'p'];
     try {
+      const props = await inspect(['props', '--pager', 'inspect-1', '--id', '7'], project);
+      assert.equal(props.status, 0, props.stderr || props.stdout);
+      assert.equal(JSON.parse(props.stdout).properties[0].key, 'color');
+      const added = await inspect([...editArgs, '--key', 'color', '--value', '"#80112233"', '--set-supported'], project);
+      assert.equal(added.status, 0, added.stderr || added.stdout);
+      assert.equal(JSON.parse(added.stdout).value, '0x80112233');
+      assert.equal(applied.at(-1).value, 2148606515);
+      assert.equal(applied.at(-1).schemaToken, 'test-node-7');
+      const boolean = await inspect([...editArgs, '--key', 'visibility', '--value', 'false', '--set-supported'], project);
+      assert.equal(boolean.status, 0, boolean.stderr || boolean.stdout);
+      assert.equal(JSON.parse(boolean.stdout).value, false);
+      assert.equal(leakedSchemas.length, 0, 'schema queries must only reach their requesting socket');
       const edited = await inspect([...editArgs, '--key', 'width', '--value', '125.5'], project);
       assert.equal(edited.status, 0, edited.stderr || edited.stdout);
       assert.equal(JSON.parse(edited.stdout).ok, true);
@@ -177,7 +201,7 @@ async function run() {
       assert.notEqual(rejected.status, 0);
       assert.match(rejected.stderr + rejected.stdout, /Custom setter rejected/);
       assert.equal(applied.length, beforeInvalid + 1, 'failed edits must never be automatically replayed');
-    } finally { clearInterval(poller); }
+    } finally { clearInterval(poller); observer.close(); }
     const timedOut = await inspect([...editArgs, '--key', 'width', '--value', '140', '--timeout-ms', '100'], project);
     assert.notEqual(timedOut.status, 0);
     assert.match(timedOut.stdout + timedOut.stderr, /may still apply/);

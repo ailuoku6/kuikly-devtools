@@ -232,3 +232,15 @@ Screenshot packets set `full:true` and include the complete tree collected at up
 `inspect state --pager <pagerId> --id <nativeRef>` requests state and waits for a device delta, returning `{pagerId,node}` with s/as and writable metadata. It replaces the session's state subscription list. Both commands retain the 15 KiB output spill rule.
 
 Live capture is pumped both on sampling ticks and after successful uploads, so continuous state uploads cannot starve screenshots. Both paths share live, in-flight and rate-limit guards.
+
+### Supported property discovery and setting (propSchemaV1)
+
+The server WebSocket hello and device ingest/session summary advertise `capabilities:["propSchemaV1"]`. Existing Node.e remains unchanged. Send `{type:"inspectProps",id,requestId}` for an on-demand device query. The device uploads `propSchemaResults`, forwarded only in the requesting client's delta. Successful results contain `{requestId,ok,id,schemaVersion:1,schemaToken,properties,reason?}`; failures include error/code. Definitions include key/inputType/wireType/group/description, range/enum constraints, and reported/readable/currentValue. reported refers to current tree collection, not whether business source declared the property.
+
+Send `{type:"edit",mode:"setSupported",schemaToken,id,target:"p",key,value,requestId}` to set a supported property, including one absent from p/e. The server validates against device-authored schema and converts user colors to UInt32 ARGB numbers. The device revalidates object identity/token, current support and constraints before invoking Kuikly setters. This mode accepts numeric ARGB colors (no theme tokens), semantic Boolean true/false, and target p only. Missing capability rejects rather than silently downgrading. Omitting mode preserves legacy editing.
+
+Tokens bind to a device session and node object instance; deletion/replacement or page recreation invalidates them. A transport disconnect alone does not change the token of a surviving object, but clients query again after reconnect; server restart clears its schema cache. Ordinary value changes do not invalidate tokens. Writes use last-executed-wins semantics, without CAS.
+
+Edit results may include `readback:{key,inputType,readable,value?,reported}` from the actual post-set object. The server formats colors; the CLI prefers this readback. The runtime remembers touched keys, not submitted values, and re-reads them for subsequent trees so default layout values remain visible. Legacy p/e storage types remain unchanged. Failed setters trigger tree refresh; partial side effects cannot be rolled back generically. Invalid values are rejected before setters.
+
+`inspect props --pager <id> --id <node>` discovers capabilities. `inspect edit ... --set-supported` queries fresh schema, submits once, and waits for confirmation. Existing output-size and no-auto-retry timeout rules apply. Virtual nodes, unknown properties, dynamic Kotlin members, deletion and reset-to-unset are excluded.

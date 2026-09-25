@@ -100,6 +100,7 @@ function parseArgs(argv) {
       case '--status': options.status = next(); break;
       case '--kind': options.kind = next(); break;
       case '--id': options.id = next(); break;
+      case '--set-supported': options.setSupported = true; break;
       case '--target': options.editTarget = next(); break;
       case '--key': options.editKey = next(); break;
       case '--value': options.editValue = next(); break;
@@ -454,12 +455,12 @@ async function commandInspect(options) {
     return 0;
   }
   if (!subject) {
-    fail('usage: kuikly-devtools inspect <sessions|logs|network|native|nodes|log-detail|network-detail|native-detail|node-detail|state|edit> [options]');
+    fail('usage: kuikly-devtools inspect <sessions|logs|network|native|nodes|log-detail|network-detail|native-detail|node-detail|state|props|edit> [options]');
     process.exitCode = 1;
     return 1;
   }
   let body;
-  if (subject === 'edit' || subject === 'state') {
+  if (subject === 'edit' || subject === 'state' || subject === 'props') {
     const id = Number(options.id);
     if (!options.pagerId || options.id == null || !Number.isSafeInteger(id) || id < 0) {
       throw new Error(`usage: inspect ${subject} --pager <pager-id> --id <node-id>`);
@@ -477,6 +478,14 @@ async function commandInspect(options) {
       try { value = JSON.parse(options.editValue); } catch (_) { throw new Error('--value must be valid JSON; wrap strings in JSON double quotes'); }
       command = { type: 'edit', requestId: `cli-${randomBytes(12).toString('hex')}`, id,
         target: options.editTarget, key: options.editKey, value };
+      if (options.setSupported) {
+        if (options.editTarget !== 'p') throw new Error('--set-supported only supports --target p');
+        const schema = await pageCommand({ port: options.panelPort, pagerId: options.pagerId, timeoutMs,
+          command: { type: 'inspectProps', id, requestId: `cli-${randomBytes(12).toString('hex')}` } });
+        command.mode = 'setSupported'; command.schemaToken = schema.schemaToken;
+      }
+    } else if (subject === 'props') {
+      command = { type: 'inspectProps', id, requestId: `cli-${randomBytes(12).toString('hex')}` };
     } else {
       command = { type: 'state', ids: [id] };
     }
@@ -595,7 +604,8 @@ Options
   --target <p|s|as>     Field group for inspect edit (props, view state, attr state)
   --key <field>        Field name for inspect edit
   --value <JSON>       New value for inspect edit; strings require JSON double quotes
-  --timeout-ms <n>     Device confirmation timeout for edit/state (default: 20000)
+  --set-supported      Set a supported prop even if absent (queries device schema first)
+  --timeout-ms <n>     Device confirmation timeout for edit/state/props (default: 20000)
   --force              Replace existing files when running \`init-skill\`
 
 Examples
@@ -605,6 +615,7 @@ Examples
   npx kuikly-devtools inspect logs --pager 7 --query timeout
   npx kuikly-devtools inspect network-detail --pager 7 --id cb_42
   npx kuikly-devtools inspect native --pager 7 --query CalendarModule
+  npx kuikly-devtools inspect props --pager 7 --id 42
   npx kuikly-devtools inspect state --pager 7 --id 42
   npx kuikly-devtools inspect edit --pager 7 --id 42 --target p --key width --value '120'
   npx kuikly-devtools init-skill --project .

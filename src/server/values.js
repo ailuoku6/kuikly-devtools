@@ -40,6 +40,7 @@ function normalizeNode(node) {
 }
 
 function prepareEdit(node, command) {
+  if (command.mode) throw new Error('Unsupported edit mode');
   const { target, key, requestId } = command;
   if (!node || !['p', 's', 'as'].includes(target) || typeof key !== 'string' ||
       typeof requestId !== 'string' || !requestId || requestId.length > 128 || !own(command, 'value')) {
@@ -84,3 +85,58 @@ function prepareEdit(node, command) {
 }
 
 module.exports = { colorBits, normalizeNode, prepareEdit };
+
+/** New semantic edits use device-authored schema, never infer types from an absent old value. */
+function prepareSupportedEdit(node, command, schema) {
+  const { id, key, requestId, target, schemaToken } = command;
+  if (!node || target !== 'p' || typeof key !== 'string' || typeof requestId !== 'string' ||
+      !requestId || requestId.length > 128 || !own(command, 'value')) throw new Error('Invalid supported-property edit or missing node');
+  if (!schema || schema.schemaVersion !== 1 || schema.schemaToken !== schemaToken || schema.id !== id) {
+    throw new Error('SCHEMA_EXPIRED: query inspect props again before editing');
+  }
+  const def = schema.properties.find((item) => item.key === key);
+  if (!def) throw new Error('UNSUPPORTED_PROPERTY: node does not support this property');
+  let value = command.value;
+  const number = (v) => {
+    if (typeof v !== 'number' || !Number.isFinite(v) || !Number.isFinite(Math.fround(v)) ||
+        (def.min !== undefined && (def.exclusiveMin ? v <= def.min : v < def.min)) ||
+        (def.max !== undefined && v > def.max)) throw new Error(`INVALID_VALUE: ${def.description}`);
+  };
+  switch (def.inputType) {
+    case 'color':
+      value = colorBits(value);
+      if (value === null) throw new Error('INVALID_VALUE: expected numeric ARGB; theme tokens are not supported');
+      break;
+    case 'boolean': if (typeof value !== 'boolean') throw new Error('INVALID_VALUE: expected true or false'); break;
+    case 'string': if (typeof value !== 'string' || value.length > 2000) throw new Error('INVALID_VALUE: expected text up to 2000 characters'); break;
+    case 'enum': if (!def.enumValues?.includes(value)) throw new Error(`INVALID_VALUE: ${def.description}`); break;
+    case 'number': number(value); break;
+    case 'space':
+      if (typeof value === 'number') number(value);
+      else if (value && typeof value === 'object' && !Array.isArray(value)) {
+        for (const [side, n] of Object.entries(value)) {
+          if (!['top', 'left', 'bottom', 'right'].includes(side)) throw new Error('INVALID_VALUE: unknown spacing side');
+          number(n);
+        }
+      } else throw new Error('INVALID_VALUE: expected spacing number or object');
+      break;
+    default: throw new Error('Unsupported property schema type');
+  }
+  return { type: 'edit', mode: 'setSupported', id, target, key, requestId, schemaToken, value };
+}
+
+function normalizeSchema(result) {
+  return { ...result, properties: result.properties?.map((def) => ({ ...def,
+    ...(own(def, 'currentValue') ? { currentValue: displayValue(def.currentValue, def.key, def.inputType === 'color' ? 'Color' : '') } : {}),
+  })) };
+}
+function normalizeEditResult(result) {
+  if (!result.readback) return result;
+  const rb = result.readback;
+  return { ...result, readback: { ...rb, ...(own(rb, 'value') ? {
+    value: displayValue(rb.value, rb.key, rb.inputType === 'color' ? 'Color' : ''),
+  } : {}) } };
+}
+module.exports.prepareSupportedEdit = prepareSupportedEdit;
+module.exports.normalizeSchema = normalizeSchema;
+module.exports.normalizeEditResult = normalizeEditResult;

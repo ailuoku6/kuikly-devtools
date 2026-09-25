@@ -27,6 +27,8 @@ function pageCommand({ port, pagerId, command, timeoutMs = 20000 }) {
         if (message.type === 'hello' && !sent) {
           const session = message.sessions.find((item) => item.pagerId === pagerId);
           if (!session || session.stale) return finish(new Error('Target page is not attached'));
+          if ((command.type === 'inspectProps' || command.mode === 'setSupported') &&
+              (!message.capabilities?.includes('propSchemaV1') || !session.capabilities?.includes('propSchemaV1'))) return finish(new Error('Adding properties requires the latest server and rebuilt page runtime'));
           sent = true;
           socket.send(JSON.stringify({ type: 'command', pagerId, command }));
         } else if (message.type === 'error' &&
@@ -35,7 +37,10 @@ function pageCommand({ port, pagerId, command, timeoutMs = 20000 }) {
         } else if (message.type === 'session-removed' && message.pagerId === pagerId) {
           finish(new Error('Target page closed before device confirmation'));
         } else if (message.type === 'delta' && message.pagerId === pagerId) {
-          if (command.type === 'edit') {
+          if (command.type === 'inspectProps') {
+            const result = message.propSchemaResults?.find((item) => item.requestId === command.requestId);
+            if (result) finish(result.ok ? null : new Error(result.error || 'Property query failed'), { pagerId, ...result });
+          } else if (command.type === 'edit') {
             const result = message.editResults?.find((item) => item.requestId === command.requestId);
             if (!result) return;
             if (!result.ok) return finish(new Error(result.error || 'Device rejected edit'));
@@ -44,7 +49,7 @@ function pageCommand({ port, pagerId, command, timeoutMs = 20000 }) {
               pagerId, requestId: command.requestId, ok: true, id: command.id,
               target: command.target, key: command.key,
               // A setter may normalize the input or remove its node. Report actual readback only.
-              ...(node?.[command.target] && Object.prototype.hasOwnProperty.call(node[command.target], command.key)
+              ...(result.readback ? (result.readback.readable ? { value: result.readback.value } : { readbackUnavailable: true }) : node?.[command.target] && Object.prototype.hasOwnProperty.call(node[command.target], command.key)
                 ? { value: node[command.target][command.key] } : { readbackUnavailable: true }),
             });
           } else if (command.type === 'state') {

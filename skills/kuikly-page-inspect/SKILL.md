@@ -1,6 +1,6 @@
 ---
 name: kuikly-page-inspect
-description: Inspect and edit a live Kuikly page through kuikly-devtools. Use when debugging UI structure, component state, logs, network or native calls, or when asked to change live node properties or component state. Search relevant nodes and inspect their writable types before editing.
+description: Inspect and edit a live Kuikly page through kuikly-devtools. Use when debugging UI structure, component state, logs, network or native calls, or when asked to change live node properties or component state. Search relevant nodes and inspect their writable types or supported-property schema before editing, including properties absent from attr.
 ---
 
 # Kuikly Page Inspect
@@ -50,7 +50,7 @@ To fetch state and its writable metadata before editing, use:
 npx kuikly-devtools inspect state --pager <pager-id> --id <node-id>
 ```
 
-This subscribes to the selected node's state and waits for a device update (up to 20 seconds). The state command replaces the session's current state subscription. Do not try to edit a field missing from `e[target]`: it is read-only or the page needs rebuilding with the current runtime/instrumentor. For an unclear target or value, resolve that ambiguity before writing; normal read-only investigation should not modify page state.
+This subscribes to the selected node's state and waits for a device update (up to 20 seconds). The state command replaces the session's current state subscription. For state (`s`/`as`), only edit fields listed in `e[target]`; Kotlin members cannot be dynamically added. For properties (`p`) absent from `e.p`, query the supported-property schema below. Default layout values can be omitted from `p` even when the business set them. For an unclear target or value, resolve that ambiguity before writing; normal read-only investigation should not modify page state.
 
 Send one field edit using JSON for `--value`. Quote the shell argument so the JSON is passed literally. Examples:
 
@@ -73,3 +73,24 @@ Use values compatible with the reported type:
 The CLI waits for `editResults` from the device. Only `{ok:true}` is confirmed success; the result includes the actual readback value when available. If `readbackUnavailable:true`, fetch `node-detail` or search again: a setter may remove/recreate the node. A device rejection exits nonzero. Timeout/disconnection leaves the outcome uncertain: read the current node before retrying, and do not automatically replay an edit because custom setters may have side effects. `--timeout-ms` can adjust the wait (100–120000 ms).
 
 Report the targeted field and confirmed readback, including any normalization. If verification or continued diagnosis is needed, read just that node rather than the full page snapshot. Changes affect the live page only, are not persisted to business source, and later application updates may overwrite them.
+
+## Set supported properties absent from attr
+
+Find the actual target first: a button background usually belongs to the container parent of its text node. Read its latest node ID, then query:
+
+```bash
+npx kuikly-devtools inspect props --pager <pager-id> --id <node-id>
+```
+
+The device returns `properties` with semantic `inputType`, constraints, enum values, description, `reported`, and actual `currentValue` when readable. `reported:false` does not prove the business never set the property. Empty properties/reason means this node currently has no supported additions; virtual nodes are excluded. A capability error requires updating the server and rebuilding/reloading the page.
+
+For a property in this schema, prefer the typed setter mode for both additions and subsequent changes:
+
+```bash
+npx kuikly-devtools inspect edit --pager 7 --id 42 --target p --key backgroundColor --value '"#80C8FF"' --set-supported
+npx kuikly-devtools inspect edit --pager 7 --id 42 --target p --key visibility --value 'false' --set-supported
+```
+
+`--set-supported` refreshes schema before submitting once; it never falls back to legacy editing. It accepts only target `p`, only keys supported by that node, and no null values. Boolean inputs are true/false even if legacy p stores 0/1. Numeric colors use ARGB with alpha first; this mode does not accept native theme tokens. Font size input is a logical size; readback can reflect host scaling. Spacing objects replace all sides, omitted sides become zero.
+
+Unknown attributes, arbitrary state members and removal/reset-to-unset are not supported. Do not use null or remove a property cache entry to pretend to restore defaults. For an expired node/schema or uncertain timeout, locate/read the node again and do not automatically replay the write. Report actual acknowledged readback, not the submitted value; effects remain confined to the current runtime instance and business updates may overwrite them.

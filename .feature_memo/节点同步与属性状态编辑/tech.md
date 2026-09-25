@@ -6,3 +6,7 @@
 - runtime Editing 负责类型检查与 Kotlin 基础类型/Color 实例构建，Attr.setProp 更新渲染属性，FlexNode 更新布局并触发布局请求。
 - Hub 入站统一颜色规范化；编辑前按 e 类型恢复字符串、signed Int、Long 或 Color 数值。
 - 面板等待 requestId 回执，不乐观修改树。断线、页面关闭、错误和 20 秒超时均结束 pending 状态。
+
+## 2026-09-25 新增属性实现
+
+新增 KDevtoolsPropSchema 注册表，定义语义类型、范围、枚举、支持性和正式 setter。KDevtoolsSession 持有节点对象身份 token 与触达键，树补充触达的默认布局值（读实际值而非提交缓存），readback 保留 Float 实际精度。server 解析 ARGB，runtime 构造 Color。UI 添加入口及注册字段编辑共用 typed 路径，旧 p/e 和命令保持兼容。

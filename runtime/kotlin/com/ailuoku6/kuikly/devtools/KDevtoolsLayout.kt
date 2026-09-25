@@ -26,7 +26,7 @@ import com.tencent.kuikly.core.layout.valueEquals
  * suppress — the getter is in the klib on JVM, JS and Native; Native links it because the app and
  * kuikly-core are one binary. Undefined sides are `NaN` and are skipped.
  */
-internal fun collectViewProps(view: DeclarativeBaseView<*, *>, attr: Attr?): Map<String, Any> {
+internal fun collectViewProps(view: DeclarativeBaseView<*, *>, attr: Attr?, includeDefaults: Boolean = false): Map<String, Any> {
     val props = LinkedHashMap<String, Any>()
     if (attr != null) {
         if (attr.keepAlive) {
@@ -39,48 +39,48 @@ internal fun collectViewProps(view: DeclarativeBaseView<*, *>, attr: Attr?): Map
         }
     }
     try {
-        collectFlexStyle(view.flexNode, props)
+        collectFlexStyle(view.flexNode, props, includeDefaults)
     } catch (t: Throwable) {
         // FlexNode getters are public and stable; still isolate so one bad node does not kill the tick.
     }
     return props
 }
 
-private fun collectFlexStyle(node: FlexNode, props: MutableMap<String, Any>) {
-    putDefined(props, "width", node.styleWidth)
-    putDefined(props, "height", node.styleHeight)
-    putDefined(props, "minWidth", node.styleMinWidth)
-    putDefined(props, "minHeight", node.styleMinHeight)
-    putDefined(props, "maxWidth", node.styleMaxWidth)
-    putDefined(props, "maxHeight", node.styleMaxHeight)
-    if (!node.flex.valueEquals(0f)) {
-        props["flex"] = roundFrame(node.flex)
+private fun collectFlexStyle(node: FlexNode, props: MutableMap<String, Any>, defaults: Boolean) {
+    putDefined(props, "width", node.styleWidth, defaults)
+    putDefined(props, "height", node.styleHeight, defaults)
+    putDefined(props, "minWidth", node.styleMinWidth, defaults)
+    putDefined(props, "minHeight", node.styleMinHeight, defaults)
+    putDefined(props, "maxWidth", node.styleMaxWidth, defaults)
+    putDefined(props, "maxHeight", node.styleMaxHeight, defaults)
+    if (defaults || !node.flex.valueEquals(0f)) {
+        props["flex"] = if (defaults) node.flex.toDouble() else roundFrame(node.flex)
     }
-    spaceSides { node.getMargin(it) }?.let { props["margin"] = it }
-    spaceSides { node.getPadding(it) }?.let { props["padding"] = it }
-    if (node.flexDirection != FlexDirection.COLUMN) {
+    spaceSides(defaults) { node.getMargin(it) }?.let { props["margin"] = it }
+    spaceSides(defaults) { node.getPadding(it) }?.let { props["padding"] = it }
+    if (defaults || node.flexDirection != FlexDirection.COLUMN) {
         props["flexDirection"] = node.flexDirection.name
     }
-    if (node.flexWrap != FlexWrap.NOWRAP) {
+    if (defaults || node.flexWrap != FlexWrap.NOWRAP) {
         props["flexWrap"] = node.flexWrap.name
     }
-    if (node.justifyContent != FlexJustifyContent.FLEX_START) {
+    if (defaults || node.justifyContent != FlexJustifyContent.FLEX_START) {
         props["justifyContent"] = node.justifyContent.name
     }
-    if (node.alignItems != FlexAlign.STRETCH) {
+    if (defaults || node.alignItems != FlexAlign.STRETCH) {
         props["alignItems"] = node.alignItems.name
     }
-    if (node.alignSelf != FlexAlign.AUTO) {
+    if (defaults || node.alignSelf != FlexAlign.AUTO) {
         props["alignSelf"] = node.alignSelf.name
     }
-    if (node.alignContent != FlexAlign.FLEX_START) {
+    if (defaults || node.alignContent != FlexAlign.FLEX_START) {
         props["alignContent"] = node.alignContent.name
     }
-    if (node.positionType != FlexPositionType.RELATIVE) {
+    if (defaults || node.positionType != FlexPositionType.RELATIVE) {
         props["positionType"] = node.positionType.name
     }
     try {
-        collectStylePosition(node, props)
+        collectStylePosition(node, props, defaults)
     } catch (t: Throwable) {
         // Visibility suppress is compile-time; isolate anyway so one Kuikly version cannot drop the rest.
     }
@@ -92,17 +92,17 @@ private fun collectFlexStyle(node: FlexNode, props: MutableMap<String, Any>) {
  * cross-module visibility check is how we read what `attr { top(); left(); … }` stored.
  */
 @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER")
-private fun collectStylePosition(node: FlexNode, props: MutableMap<String, Any>) {
+private fun collectStylePosition(node: FlexNode, props: MutableMap<String, Any>, precise: Boolean) {
     val position = node.stylePosition
-    putDefined(props, "left", position[FlexLayout.PositionType.POSITION_LEFT.ordinal])
-    putDefined(props, "top", position[FlexLayout.PositionType.POSITION_TOP.ordinal])
-    putDefined(props, "right", position[FlexLayout.PositionType.POSITION_RIGHT.ordinal])
-    putDefined(props, "bottom", position[FlexLayout.PositionType.POSITION_BOTTOM.ordinal])
+    putDefined(props, "left", position[FlexLayout.PositionType.POSITION_LEFT.ordinal], precise)
+    putDefined(props, "top", position[FlexLayout.PositionType.POSITION_TOP.ordinal], precise)
+    putDefined(props, "right", position[FlexLayout.PositionType.POSITION_RIGHT.ordinal], precise)
+    putDefined(props, "bottom", position[FlexLayout.PositionType.POSITION_BOTTOM.ordinal], precise)
 }
 
-private fun putDefined(props: MutableMap<String, Any>, key: String, value: Float) {
+private fun putDefined(props: MutableMap<String, Any>, key: String, value: Float, precise: Boolean) {
     if (!value.isUndefined()) {
-        props[key] = roundFrame(value)
+        props[key] = if (precise) value.toDouble() else roundFrame(value)
     }
 }
 
@@ -110,21 +110,21 @@ private fun putDefined(props: MutableMap<String, Any>, key: String, value: Float
  * Uniform `margin(10f)` becomes the number `10`. Mixed sides become `{top, left, bottom, right}`
  * with zero sides omitted. All-zero (Yoga default) is dropped.
  */
-private fun spaceSides(get: (StyleSpace.Type) -> Float): Any? {
+private fun spaceSides(defaults: Boolean, get: (StyleSpace.Type) -> Float): Any? {
     val top = get(StyleSpace.Type.TOP)
     val left = get(StyleSpace.Type.LEFT)
     val bottom = get(StyleSpace.Type.BOTTOM)
     val right = get(StyleSpace.Type.RIGHT)
-    if (top.valueEquals(0f) && left.valueEquals(0f) && bottom.valueEquals(0f) && right.valueEquals(0f)) {
+    if (!defaults && top.valueEquals(0f) && left.valueEquals(0f) && bottom.valueEquals(0f) && right.valueEquals(0f)) {
         return null
     }
     if (top.valueEquals(left) && left.valueEquals(bottom) && bottom.valueEquals(right)) {
-        return roundFrame(top)
+        return if (defaults) top.toDouble() else roundFrame(top)
     }
     val sides = LinkedHashMap<String, Double>()
-    if (!top.valueEquals(0f)) sides["top"] = roundFrame(top)
-    if (!left.valueEquals(0f)) sides["left"] = roundFrame(left)
-    if (!bottom.valueEquals(0f)) sides["bottom"] = roundFrame(bottom)
-    if (!right.valueEquals(0f)) sides["right"] = roundFrame(right)
+    if (!top.valueEquals(0f)) sides["top"] = if (defaults) top.toDouble() else roundFrame(top)
+    if (!left.valueEquals(0f)) sides["left"] = if (defaults) left.toDouble() else roundFrame(left)
+    if (!bottom.valueEquals(0f)) sides["bottom"] = if (defaults) bottom.toDouble() else roundFrame(bottom)
+    if (!right.valueEquals(0f)) sides["right"] = if (defaults) right.toDouble() else roundFrame(right)
     return sides
 }

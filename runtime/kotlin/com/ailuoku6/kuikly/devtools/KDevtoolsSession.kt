@@ -20,9 +20,10 @@ internal class KDevtoolsSession(
         KDevtoolsTransport(pager, pagerId)::send
 ) {
 
-    private val tree = KDevtoolsTree(pager)
-    private val tap = KDevtoolsBridgeTap(this)
     internal val sessionId: String = nextSessionId()
+    private val propSchema = KDevtoolsPropSchema(sessionId)
+    private val tree = KDevtoolsTree(pager, propSchema)
+    private val tap = KDevtoolsBridgeTap(this)
 
     private val logs = ArrayList<LogRecord>()
     private val networkOrder = ArrayList<String>()
@@ -65,6 +66,7 @@ internal class KDevtoolsSession(
     private var inFlightDropped = 0
     private var pendingScreenshot: JSONObject? = null
     private val editResults = ArrayList<JSONObject>()
+    private val propSchemaResults = ArrayList<JSONObject>()
     private var screenshotInFlight = false
     private var queuedShotId: Int? = null
     private var queuedShotSample = 2
@@ -96,6 +98,7 @@ internal class KDevtoolsSession(
     fun detach() {
         if (detached) return
         detached = true
+        propSchema.clear()
         val now = DateTime.currentTimestamp()
         for (id in networkOrder) {
             networkById[id]?.let { record ->
@@ -315,7 +318,7 @@ internal class KDevtoolsSession(
         // sample. Chunked bodies flush immediately so a multi-megabyte rsp is not delayed 1.5s
         // per slice.
         val now = DateTime.currentTimestamp()
-        val hasTree = isFull || delta.nodes.length() != 0 || delta.removed.length() != 0 || editResults.isNotEmpty()
+        val hasTree = isFull || delta.nodes.length() != 0 || delta.removed.length() != 0 || editResults.isNotEmpty() || propSchemaResults.isNotEmpty()
         val hasShot = pendingScreenshot != null
         val logCount = logs.size
         val netCount = flushedNetwork.size
@@ -378,9 +381,13 @@ internal class KDevtoolsSession(
             pendingScreenshot = null
         }
 
+        val flushedSchemas = ArrayList(propSchemaResults)
+        propSchemaResults.clear()
         val flushedEdits = ArrayList(editResults)
         editResults.clear()
         val payload = JSONObject().apply {
+            put("capabilities", JSONArray().put("propSchemaV1"))
+            if (flushedSchemas.isNotEmpty()) put("propSchemaResults", JSONArray().apply { flushedSchemas.forEach { put(it) } })
             if (flushedEdits.isNotEmpty()) put("editResults", JSONArray().apply { for (result in flushedEdits) put(result) })
             put("v", PROTOCOL_VERSION)
             put("pagerId", pagerId)
@@ -455,6 +462,7 @@ internal class KDevtoolsSession(
                 // snapshot next time since the receiver never saw this delta.
                 restoreLogs(flushedLogs)
                 editResults.addAll(0, flushedEdits)
+                propSchemaResults.addAll(0, flushedSchemas)
                 droppedLogs += droppedNow
                 if (attachShot && shot != null && pendingScreenshot == null) {
                     pendingScreenshot = shot
@@ -704,6 +712,7 @@ internal class KDevtoolsSession(
         for (index in 0 until commands.length()) {
             val command = commands.optJSONObject(index) ?: continue
             when (command.optString("type")) {
+                "inspectProps" -> inspectProps(command)
                 "edit" -> applyEdit(command)
                 "full" -> needFullSnapshot = true
                 "state" -> {
@@ -754,19 +763,38 @@ internal class KDevtoolsSession(
         }
     }
 
+    private fun inspectProps(command: JSONObject) {
+        val result = try {
+            val id = command.optInt("id", -1)
+            val view = if (id == pager.nativeRef) pager else
+                pager.getViewWithNativeRef(id) as? DeclarativeBaseView<*, *> ?: throw PropEditException("STALE_NODE", "节点已不存在")
+            propSchema.query(view).apply { put("ok", true) }
+        } catch (t: Throwable) {
+            JSONObject().apply { put("ok", false); put("error", t.message ?: "查询失败"); put("code", (t as? PropEditException)?.code ?: "SCHEMA_FAILED") }
+        }
+        result.put("requestId", command.optString("requestId"))
+        propSchemaResults.add(result)
+    }
+
     private fun applyEdit(command: JSONObject) {
         val result = JSONObject().apply { put("requestId", command.optString("requestId")) }
         try {
             val id = command.optInt("id", -1)
             val view = if (id == pager.nativeRef) pager else
-                pager.getViewWithNativeRef(id) as? DeclarativeBaseView<*, *> ?: error("View no longer exists")
+                pager.getViewWithNativeRef(id) as? DeclarativeBaseView<*, *> ?: throw PropEditException("STALE_NODE", "View no longer exists")
             val key = command.optString("key")
             val value = command.opt("value")
-            when (command.optString("target")) {
-                "p" -> editProp(view, key, value)
-                "s" -> KDevtools.editState(view, key, value)
-                "as" -> KDevtools.editState(view.getViewAttr(), key, value)
-                else -> error("Unknown edit target")
+            if (command.optString("mode") == "setSupported") {
+                require(command.optString("target") == "p") { "setSupported only supports props" }
+                result.put("readback", propSchema.set(view, command.optString("schemaToken"), key, value))
+            } else {
+                require(command.optString("mode").isEmpty()) { "Unknown edit mode" }
+                when (command.optString("target")) {
+                    "p" -> editProp(view, key, value)
+                    "s" -> KDevtools.editState(view, key, value)
+                    "as" -> KDevtools.editState(view.getViewAttr(), key, value)
+                    else -> error("Unknown edit target")
+                }
             }
             stateNodeIds = stateNodeIds + id
             needFullSnapshot = true
@@ -775,6 +803,9 @@ internal class KDevtoolsSession(
         } catch (t: Throwable) {
             result.put("ok", false)
             result.put("error", t.message ?: "Edit failed")
+            result.put("code", (t as? PropEditException)?.code ?: "EDIT_FAILED")
+            needFullSnapshot = true
+            liveNeedsFrame = true
         }
         editResults.add(result)
     }

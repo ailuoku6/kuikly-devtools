@@ -2,11 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties, MouseEvent, ReactNode } from 'react';
 import { copyText } from '../copy';
 import { editHint } from '../editHints';
-import type { EditHandler, NodeDto, ScreenshotDto } from '../protocol';
+import type { SupportedPropHandlers, PropDefinition, PropSchemaResult, EditHandler, NodeDto, ScreenshotDto } from '../protocol';
 import { LIVE_SHOT_INTERVAL_MS, LIVE_SHOT_SAMPLE } from '../protocol';
 import { hitTestNode, overlayBox, pathTo, visualFrame } from '../tree';
 
-interface InspectorProps {
+interface InspectorProps extends SupportedPropHandlers {
   onEdit: EditHandler;
   node: NodeDto | null;
   nodes: Map<number, NodeDto>;
@@ -31,11 +31,14 @@ export function Inspector({
   onRequestState,
   onSelect,
   onEdit,
+  ...supportedHandlers
 }: InspectorProps) {
   return (
     <div className="scroll">
       {node ? (
         <NodeInspector
+          key={node.id}
+          {...supportedHandlers}
           onEdit={onEdit}
           node={node}
           nodes={nodes}
@@ -251,7 +254,8 @@ function NodeInspector({
   onRequestState,
   onSelect,
   onEdit,
-}: {
+  ...supportedHandlers
+}: SupportedPropHandlers & {
   onEdit: EditHandler;
   node: NodeDto;
   nodes: Map<number, NodeDto>;
@@ -323,7 +327,7 @@ function NodeInspector({
       </Section>
 
       <Section title={`属性 (${Object.keys(node.p ?? {}).length})`} defaultOpen>
-        <KeyValues key={`p-${node.id}`} values={node.p} editable={node.e?.p} onEdit={(key, value) => onEdit('p', key, value)} emptyLabel="未设置属性" />
+        <Properties node={node} {...supportedHandlers} onEdit={(key, value) => onEdit('p', key, value)} />
       </Section>
 
       <Section title="状态" defaultOpen>
@@ -470,8 +474,8 @@ function KeyValues({ values, emptyLabel, editable, onEdit }: {
 const FOLD_CHARS = 80;
 const FOLD_LINES = 3;
 
-function Row({ k, v, editType, onEdit }: {
-  k: string; v: unknown; editType?: string; onEdit?: (value: unknown) => Promise<void>;
+function Row({ k, v, editType, onEdit, hint }: {
+  k: string; v: unknown; editType?: string; hint?: string; onEdit?: (value: unknown) => Promise<void>;
 }) {
   const hex = typeof v === 'string' && /^0x[0-9A-F]{8}$/.test(v) ? v : null;
   const colorEditable = editType?.startsWith('Color') || (/color|tint/i.test(k) && /^(String|Int|Long)\??$/.test(editType ?? ''));
@@ -598,7 +602,7 @@ function Row({ k, v, editType, onEdit }: {
                 }
               }}
             />
-            <div className="edit-hint">{editType && editHint(k, editType)}</div>
+            <div className="edit-hint">{hint ?? (editType && editHint(k, editType))}</div>
             <div className="edit-hint">回车或失焦应用 · Esc 取消 · Shift+Enter 换行</div>
           </div>
         ) : (
@@ -727,4 +731,125 @@ function Section({
       {open && children}
     </div>
   );
+}
+
+function schemaEditType(def: PropDefinition): string {
+  return def.inputType === 'color' ? 'Color' : def.inputType === 'enum'
+    ? `enum:${def.enumValues?.join(',')}` : def.wireType;
+}
+
+function Properties({ node, canSetSupported, onQueryProps, onSetSupported, onEdit }:
+  SupportedPropHandlers & { node: NodeDto; onEdit: (key: string, value: unknown) => Promise<void> }) {
+  const [schema, setSchema] = useState<PropSchemaResult | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    let active = true;
+    setSchema(null);
+    setAdding(false);
+    if (canSetSupported) void onQueryProps(node.id).then((value) => {
+      if (active) setSchema(value);
+    }).catch((e: Error) => { if (active) setError(e.message); });
+    return () => { active = false; alive.current = false; };
+    // Query once per selected node/capability; callbacks change on every live snapshot.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [node.id, canSetSupported]);
+  const open = async () => {
+    setLoading(true); setError('');
+    try {
+      const fresh = await onQueryProps(node.id);
+      if (alive.current) { setSchema(fresh); setAdding(true); }
+    } catch (e) { if (alive.current) setError(String(e)); }
+    finally { if (alive.current) setLoading(false); }
+  };
+  const definitions = schema?.properties ?? [];
+  const missing = definitions.filter((def) => !Object.prototype.hasOwnProperty.call(node.p ?? {}, def.key));
+  const set = async (key: string, value: unknown) => {
+    if (!schema) throw new Error('请重新查询属性');
+    await onSetSupported(node.id, key, value, schema.schemaToken);
+  };
+  return <>
+    <div className="prop-toolbar">
+      <button disabled={!canSetSupported || loading || node.r === false} onClick={() => void open()}
+        title={!canSetSupported ? '需要新版服务和重新构建加载的页面' : node.r === false ? '虚拟节点暂不支持新增属性' : '选择当前节点支持的属性'}>
+        {loading ? '查询中…' : '＋ 添加属性'}
+      </button>
+      {!canSetSupported && <span className="edit-hint">更新服务并重新构建、加载页面后可添加属性</span>}
+    </div>
+    {error && <div className="edit-error" role="alert">{error}</div>}
+    {adding && <AddProperty key={schema?.schemaToken} definitions={missing} reason={schema?.reason}
+      onCancel={() => setAdding(false)} onApply={async (key, value) => { await set(key, value); setAdding(false); }} />}
+    {Object.keys(node.p ?? {}).length === 0 && <div className="empty">未设置属性</div>}
+    <div className="kv">
+      {sortedEntries(node.p).map(([key, value]) => {
+        const def = definitions.find((item) => item.key === key);
+        // Do not change legacy p/e wire types; only the semantic editor displays Boolean inputs.
+        const semanticValue = def?.inputType === 'boolean' && typeof value === 'number' ? value !== 0 : value;
+        return <Row key={key} k={key} v={semanticValue} editType={def ? schemaEditType(def) : node.e?.p?.[key]}
+          hint={def?.description} onEdit={(v) => def ? set(key, v) : onEdit(key, v)} />;
+      })}
+    </div>
+  </>;
+}
+
+function AddProperty({ definitions, reason, onCancel, onApply }: {
+  definitions: PropDefinition[]; reason?: string; onCancel: () => void;
+  onApply: (key: string, value: unknown) => Promise<void>;
+}) {
+  const [query, setQuery] = useState('');
+  const [key, setKey] = useState('');
+  const [draft, setDraft] = useState('');
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const dirty = useRef(false);
+  const pending = useRef(false);
+  const composing = useRef(false);
+  const field = useRef<HTMLTextAreaElement>(null);
+  const def = definitions.find((item) => item.key === key);
+  useEffect(() => { if (key) field.current?.focus(); }, [key]);
+  const save = async () => {
+    if (!def || !dirty.current || pending.current) return;
+    dirty.current = false; pending.current = true; setSaving(true); setError('');
+    try {
+      const value = ['color', 'string', 'enum'].includes(def.inputType)
+        ? (draft.startsWith('"') ? JSON.parse(draft) : draft) : JSON.parse(draft);
+      await onApply(def.key, value);
+    } catch (e) {
+      setDraft(''); setError(e instanceof Error ? e.message : String(e));
+    } finally { pending.current = false; setSaving(false); }
+  };
+  return <div className="add-property">
+    <div className="prop-toolbar">
+      <input aria-label="搜索可添加属性" placeholder="搜索属性" value={query} disabled={saving} onChange={(e) => setQuery(e.target.value)} />
+      <button disabled={saving} onMouseDown={() => { dirty.current = false; }} onClick={onCancel}>关闭</button>
+    </div>
+    {definitions.length === 0 ? <div className="edit-hint">{reason || '当前支持的属性均已展示'}</div> :
+      <select aria-label="选择新增属性" value={key} disabled={saving} onChange={(e) => {
+        dirty.current = false; setKey(e.target.value); setDraft(''); setError('');
+      }}>
+        <option value="">选择属性…</option>
+        {['基础外观', '布局', '文本'].map((group) => <optgroup key={group} label={group}>
+          {definitions.filter((item) => item.group === group && item.key.toLowerCase().includes(query.toLowerCase()))
+            .map((item) => <option key={item.key} value={item.key}>{item.key}</option>)}
+        </optgroup>)}
+      </select>}
+    {def && <>
+      <textarea ref={field} className="value-input" aria-label={`新增 ${key}`} value={draft} disabled={saving}
+        placeholder={def.examples?.[0] ?? (def.readable ? `当前值：${JSON.stringify(def.currentValue)}` : '输入属性值')}
+        onChange={(e) => { dirty.current = true; setDraft(e.target.value); }} onBlur={() => { if (!composing.current) void save(); }}
+        onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}
+        onKeyDown={(e) => {
+          if (composing.current || e.nativeEvent.isComposing || e.keyCode === 229) return;
+          if (e.key === 'Escape') { e.preventDefault(); dirty.current = false; onCancel(); }
+          else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void save(); }
+        }} />
+      <div className="edit-hint">{def.description}</div>
+      <div className="edit-hint">回车或失焦应用 · Esc 取消 · Shift+Enter 换行</div>
+    </>}
+    {saving && <div className="edit-hint">等待设备确认…</div>}
+    {error && <div className="edit-error" role="alert">{error}；草稿已清空，请以设备实际值为准</div>}
+  </div>;
 }

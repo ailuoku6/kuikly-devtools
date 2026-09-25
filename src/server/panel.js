@@ -1,6 +1,7 @@
 'use strict';
 
 const http = require('http');
+const { randomBytes } = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { WebSocketServer } = require('ws');
@@ -79,7 +80,8 @@ function createPanelServer({ hub, port, host = '0.0.0.0', uiDir, onEvent = () =>
   const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 1024 * 1024 * 1024 });
 
   wss.on('connection', (socket) => {
-    send(socket, { type: 'hello', sessions: hub.summaries() });
+    socket.propRequests = new Map();
+    send(socket, { type: 'hello', capabilities: ['propSchemaV1'], sessions: hub.summaries() });
     // Push the full archive immediately so a browser that opens after the page has already been
     // running still sees every log and request, without waiting for a subscribe round-trip.
     for (const session of hub.sessions.values()) {
@@ -93,6 +95,15 @@ function createPanelServer({ hub, port, host = '0.0.0.0', uiDir, onEvent = () =>
       } catch (error) {
         return;
       }
+      if (message.type === 'command' && message.command?.type === 'inspectProps') {
+        for (const [key, pending] of socket.propRequests) if (pending.expires < Date.now()) socket.propRequests.delete(key);
+        if (socket.propRequests.size >= 100) return send(socket, { type: 'error', requestId: message.command.requestId, message: 'Too many pending property queries' });
+        const requestId = message.command.requestId;
+        if (typeof requestId !== 'string' || !requestId || requestId.length > 128) return send(socket, { type: 'error', requestId, message: 'Invalid requestId' });
+        const routedId = `props-${randomBytes(16).toString('hex')}`;
+        socket.propRequests.set(routedId, { requestId, pagerId: String(message.pagerId), expires: Date.now() + 120000 });
+        message = { ...message, command: { ...message.command, requestId: routedId } };
+      }
       handlePanelMessage(hub, socket, message, onEvent);
     });
   });
@@ -104,7 +115,19 @@ function createPanelServer({ hub, port, host = '0.0.0.0', uiDir, onEvent = () =>
     }
   };
 
-  hub.on('delta', broadcast);
+  hub.on('delta', (message) => {
+    const { propSchemaResults, ...shared } = message;
+    for (const client of wss.clients) {
+      if (client.readyState !== 1) continue;
+      const results = (propSchemaResults || []).flatMap((result) => {
+        const pending = client.propRequests?.get(result.requestId);
+        if (!pending || pending.pagerId !== message.pagerId || pending.expires < Date.now()) return [];
+        client.propRequests.delete(result.requestId);
+        return [{ ...result, requestId: pending.requestId }];
+      });
+      send(client, results.length ? { ...shared, propSchemaResults: results } : shared);
+    }
+  });
   hub.on('session-added', (summary) => broadcast({ type: 'session-added', summary }));
   hub.on('session-removed', (payload) => broadcast({ type: 'session-removed', ...payload }));
 
@@ -347,7 +370,9 @@ function handlePanelMessage(hub, socket, message, onEvent) {
       try {
         if (!hub.enqueueCommand(String(message.pagerId || ''), message.command)) throw new Error('Session is no longer available');
       } catch (error) {
-        send(socket, { type: 'error', message: error.message, requestId: message.command?.requestId });
+        const pending = socket.propRequests?.get(message.command?.requestId);
+        socket.propRequests?.delete(message.command?.requestId);
+        send(socket, { type: 'error', message: error.message, requestId: pending?.requestId ?? message.command?.requestId });
       }
       break;
     case 'clear':

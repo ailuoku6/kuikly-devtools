@@ -1,4 +1,5 @@
 import type {
+  PropSchemaResult,
   BodyBlobDto,
   DeviceCommand,
   EditTarget,
@@ -84,10 +85,24 @@ export class DevtoolsStore {
   connection: ConnectionState = 'connecting';
 
   lastError: string | null = null;
+  serverCapabilities: string[] = [];
+  private pendingSchemas = new Map<string, { pagerId: string; finish: (result?: PropSchemaResult, error?: string) => void }>();
+  queryProps(id: number, pagerId = this.activePagerId): Promise<PropSchemaResult> {
+    if (!pagerId || !this.socket || this.socket.readyState !== WebSocket.OPEN) return Promise.reject(new Error('设备连接不可用'));
+    const requestId = `props-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => finish(undefined, '查询属性超时'), 20000);
+      const finish = (result?: PropSchemaResult, error?: string) => {
+        window.clearTimeout(timer); this.pendingSchemas.delete(requestId);
+        if (error || !result?.ok) reject(new Error(error || result?.error || '查询失败')); else resolve(result);
+      };
+      this.pendingSchemas.set(requestId, { pagerId, finish });
+      this.sendCommand({ type: 'inspectProps', id, requestId }, pagerId);
+    });
+  }
   private pendingEdits = new Map<string, { pagerId: string; finish: (error?: string) => void }>();
 
-  editNode(id: number, target: EditTarget, key: string, value: unknown): Promise<void> {
-    const pagerId = this.activePagerId;
+  editNode(id: number, target: EditTarget, key: string, value: unknown, schemaToken?: string, pagerId = this.activePagerId): Promise<void> {
     if (!pagerId || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error('设备连接不可用'));
     }
@@ -100,7 +115,7 @@ export class DevtoolsStore {
         if (error) reject(new Error(error)); else resolve();
       };
       this.pendingEdits.set(requestId, { pagerId, finish });
-      this.sendCommand({ type: 'edit', requestId, id, target, key, value }, pagerId);
+      this.sendCommand({ type: 'edit', requestId, id, target, key, value, ...(schemaToken ? { mode: 'setSupported' as const, schemaToken } : {}) }, pagerId);
     });
   }
 
@@ -167,7 +182,9 @@ export class DevtoolsStore {
       this.notify();
     };
     socket.onclose = () => {
+      for (const pending of this.pendingSchemas.values()) pending.finish(undefined, '连接已断开');
       for (const pending of this.pendingEdits.values()) pending.finish('连接已断开，请重新同步后检查实际值');
+      this.serverCapabilities = [];
       this.connection = 'closed';
       this.socket = null;
       this.notify();
@@ -246,6 +263,7 @@ export class DevtoolsStore {
   handle(message: ServerMessage): void {
     switch (message.type) {
       case 'hello': {
+        this.serverCapabilities = message.capabilities ?? [];
         const seen = new Set(message.sessions.map((summary) => summary.pagerId));
         for (const pagerId of Array.from(this.sessions.keys())) {
           if (!seen.has(pagerId)) this.sessions.delete(pagerId);
@@ -262,6 +280,7 @@ export class DevtoolsStore {
         this.autoSelect();
         break;
       case 'session-removed':
+        for (const pending of this.pendingSchemas.values()) if (pending.pagerId === message.pagerId) pending.finish(undefined, '页面已关闭');
         for (const pending of this.pendingEdits.values()) {
           if (pending.pagerId === message.pagerId) pending.finish('页面已关闭');
         }
@@ -276,6 +295,10 @@ export class DevtoolsStore {
         break;
       case 'delta':
         this.applyDelta(message);
+        for (const result of message.propSchemaResults ?? []) {
+          const pending = this.pendingSchemas.get(result.requestId);
+          if (pending?.pagerId === message.pagerId) pending.finish(result);
+        }
         for (const result of message.editResults ?? []) {
           const pending = this.pendingEdits.get(result.requestId);
           if (pending?.pagerId === message.pagerId) pending.finish(result.ok ? undefined : result.error || '修改失败');
@@ -294,6 +317,7 @@ export class DevtoolsStore {
         break;
       }
       case 'error':
+        if (message.requestId) this.pendingSchemas.get(message.requestId)?.finish(undefined, message.message);
         if (message.requestId) this.pendingEdits.get(message.requestId)?.finish(message.message);
         this.lastError = message.message;
         break;
@@ -306,6 +330,8 @@ export class DevtoolsStore {
     if (existing) {
       if (summary.firstSeenAt && existing.summary.firstSeenAt &&
           summary.firstSeenAt !== existing.summary.firstSeenAt) {
+        for (const pending of this.pendingSchemas.values()) if (pending.pagerId === summary.pagerId) pending.finish(undefined, '页面已重建，请重新查询');
+        for (const pending of this.pendingEdits.values()) if (pending.pagerId === summary.pagerId) pending.finish('页面已重建，请检查实际值');
         // Same pagerId, new page lifetime — the previous archive belongs to a destroyed pager.
         existing.logs = [];
         existing.network = [];

@@ -63,8 +63,8 @@ internal fun coerceEdit(current: Any?, value: Any?, hint: String = ""): Any? {
     }
 }
 
-private val layoutNumbers = setOf("width", "height", "minWidth", "minHeight", "maxWidth", "maxHeight", "flex", "top", "left", "bottom", "right")
-private val layoutEnums = mapOf(
+internal val layoutNumbers = setOf("width", "height", "minWidth", "minHeight", "maxWidth", "maxHeight", "flex", "top", "left", "bottom", "right")
+internal val layoutEnums = mapOf(
     "flexDirection" to FlexDirection.values().map { it.name },
     "flexWrap" to FlexWrap.values().map { it.name },
     "justifyContent" to FlexJustifyContent.values().map { it.name },
@@ -88,10 +88,10 @@ internal fun editableProps(props: Map<String, Any>): Map<String, String> {
     return result
 }
 
-internal fun editProp(view: DeclarativeBaseView<*, *>, key: String, value: Any?) {
+internal fun editProp(view: DeclarativeBaseView<*, *>, key: String, value: Any?, supportedLayout: Boolean = false) {
     val attr = view.getViewAttr()
     val props = collectViewProps(view, attr)
-    require(editableProps(props).containsKey(key)) { "Unknown or read-only property: $key" }
+    require(editableProps(props).containsKey(key) || (supportedLayout && (key in layoutNumbers || key in layoutEnums || key == "margin" || key == "padding"))) { "Unknown or read-only property: $key" }
     val node = view.flexNode
     if (key in layoutNumbers) {
         val n = coerceEdit(0f, value) as Float

@@ -1,17 +1,11 @@
 # 交接
 
-从 index.md 继续。实现和本地回归已完成，工作区未提交。
+2026-09-25：用户已授权并要求实现新增 attr 未声明属性，首期已完成代码，工作区未提交。入口见 index.md 和 docs/design/新增节点属性技术方案.md。
 
-核心路径：server/values.js 转换颜色；runtime KDevtoolsEditing.kt 还原类型并写入；SourceInstrumentor 生成 setter；Node.e 暴露可写字段；editResults 驱动面板确认。
+核心：KDevtoolsPropSchema 注册表支持普通渲染节点基础外观、布局和 TextAttr；inspectProps 返回 schema/token，edit setSupported 使用正式 setter；server 转换 ARGB，设备真实回读。树补充已触达的默认布局值。旧 p/e 存储类型和默认 edit 保持兼容。虚拟节点/未知键/动态 state/恢复未设置不支持。
 
-UI dist 与本地插桩 JAR 已更新。使用者需重新插桩编译业务页面、重新打开。旧 agent 可看不可编辑。
+UI 属性区「＋ 添加属性」，搜索分组及合法值提示，原位编辑注册字段走新模式。CLI inspect props、edit --set-supported；skill 与中英文 README/PROTOCOL 已更新。查询回执仅发原连接，server 生成路由 requestId；token 绑定节点对象/会话，断线不改变存活对象身份，客户端重连重新查询。
 
-测试：npm test 全通过，UI build 通过，真实 Kuikly JVM 回归通过，17 个插桩测试通过。标准 Gradle 入口受审批服务 503 阻断，已用临时目录编译测试替代且验证本地 JAR。后续可补 Android/iOS 真机检查。
+验证：真实 Kuikly JVM、server 类型、离线 client/hub 与 panel 路由、UI 事件测试、UI 构建、skill 校验均通过。早期 npm test 全套通过；最终新增真实网络场景受本地端口权限和审批服务 503 阻断。浏览器拒绝 file:// 测试页，视觉及 Android/iOS 真机未验证。详见 changes.md。
 
-注意：截图图片异步产生，树在上传时全量采集；不保证同一像素时刻。复杂对象/集合只读；手工属性修改可能被业务下次更新覆盖。
-
-最新排查：用户看不到入口，UI 已补缺编辑能力/只读说明。kisstate 插桩源码已包含 setter，但设备当前 Bundle 和 server 版本未确认（本机 GET 自动审批服务 503）。建议先重启本地新版服务、强制刷新浏览器、重新加载 Bundle。
-
-最新交互（覆盖此前按钮说明）：点击可写值直接输入，hover 虚线边框，Enter/blur 应用，Esc 取消，非法值恢复设备合法值。已移除编辑/应用/取消按钮，README 中英文已更新。UI 产物与编译/事件检查均通过。
-
-2026-09-25 完成：实时截图停更根因是状态每 tick 上传导致 pumpLiveShot 被 uploadInFlight 持续挡住；在成功回调补调度，JVM 延迟上传回归通过。恢复合法值提示，新增 inspect state/edit 命令和 skill 写入流程。全 npm test、UI build、JVM、skill 校验通过。runtime 修复需重新插桩并加载页面；已有业务项目 skill 用本地 CLI init-skill --force 更新，本轮未覆盖外部文件。
+交付后需重启新版服务/刷新面板、重新插桩构建加载业务页面，已有项目 skill 用 init-skill --force 更新（覆盖自定义）。本轮未操作外部业务项目或活跃页面；runtime 源码直接参与 Gradle 构建，插桩器无需变更。新增 test:ui 使用 ui 已有 esbuild 依赖。

@@ -19,11 +19,12 @@
     "node": ">=16"
   },
   "scripts": {
+    "test:ui": "node test/ui-properties.js",
     "build:ui": "cd ui && npm install && npm run build",
     "build:instrumentor": "./instrumentor/build.sh",
     "build": "npm run build:instrumentor && npm run build:ui",
     "prepack": "npm run build",
-    "test": "node test/protocol-contract.js && node test/editing.js && node test/hit-test.js && node test/blobs.js && node test/curl.js && node test/smoke.js && node test/history.js && node test/cli-servers.js && node test/inspect.js",
+    "test": "node test/protocol-contract.js && node test/editing.js && node test/page-command-offline.js && node test/panel-schema-offline.js && node test/hit-test.js && node test/blobs.js && node test/curl.js && node test/smoke.js && node test/history.js && node test/cli-servers.js && node test/inspect.js",
     "simulate": "node test/agent-sim.js"
   },
   "files": [

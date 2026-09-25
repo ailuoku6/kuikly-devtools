@@ -1,7 +1,7 @@
 'use strict';
 
 const { EventEmitter } = require('events');
-const { normalizeNode, prepareEdit } = require('./values');
+const { normalizeNode, prepareEdit, prepareSupportedEdit, normalizeSchema, normalizeEditResult } = require('./values');
 const { applyBlobs, dropBodyBuf, slimForDelta } = require('./blobs');
 const { SERVE_PATH_MARKER } = require('./ingest');
 
@@ -38,6 +38,8 @@ class Session {
     this.firstSeenAt = Date.now();
 
     this.nodes = new Map();
+    this.capabilities = [];
+    this.propSchemas = new Map();
     this.logs = [];
     this.logSeqs = new Set();
     this.network = new Map();
@@ -61,6 +63,7 @@ class Session {
   summary() {
     return {
       pagerId: this.pagerId,
+      capabilities: this.capabilities,
       page: this.page,
       className: this.className,
       platform: this.platform,
@@ -244,7 +247,7 @@ class Hub extends EventEmitter {
     // connected panel with a blank delta every eight seconds.
     if (payload.heartbeat === true &&
         changedNodes.length === 0 && removed.length === 0 && logs.length === 0 &&
-        network.length === 0 && native.length === 0 && !payload.screenshot && !payload.editResults?.length &&
+        network.length === 0 && native.length === 0 && !payload.screenshot && !payload.editResults?.length && !payload.propSchemaResults?.length &&
         !(Array.isArray(payload.blobs) && payload.blobs.length)) {
       return { commands };
     }
@@ -262,7 +265,8 @@ class Hub extends EventEmitter {
       native: native.map((record) => slimForDelta(session.native.get(record.id))).filter(Boolean),
     };
     if (payload.screenshot) delta.screenshot = payload.screenshot;
-    if (Array.isArray(payload.editResults)) delta.editResults = payload.editResults;
+    if (Array.isArray(payload.editResults)) delta.editResults = payload.editResults.map(normalizeEditResult);
+    if (Array.isArray(payload.propSchemaResults)) delta.propSchemaResults = payload.propSchemaResults.map(normalizeSchema);
     if (Array.isArray(payload.blobs) && payload.blobs.length) delta.blobs = payload.blobs;
     this.emit('delta', delta);
 
@@ -335,6 +339,7 @@ class Hub extends EventEmitter {
   }
 
   applyPayload(session, payload) {
+    if (Array.isArray(payload.capabilities)) session.capabilities = payload.capabilities;
     session.page = payload.page || session.page;
     session.className = payload.class || session.className;
     session.platform = payload.platform || session.platform;
@@ -357,6 +362,12 @@ class Hub extends EventEmitter {
       session.nodes.delete(id);
     }
 
+    for (const id of session.propSchemas.keys()) {
+      if (!session.nodes.has(id)) session.propSchemas.delete(id);
+    }
+    for (const result of payload.propSchemaResults || []) {
+      if (result.ok && result.schemaVersion === 1 && session.nodes.has(result.id)) session.propSchemas.set(result.id, result);
+    }
     const logs = this.applyLogsAndNetwork(session, payload);
     if (payload.screenshot) session.screenshot = payload.screenshot;
     return { changedNodes, removed, logs: logs.logs, network: logs.network, native: logs.native };
@@ -447,7 +458,14 @@ class Hub extends EventEmitter {
   enqueueCommand(pagerId, command) {
     const session = this.sessions.get(pagerId);
     if (!session || !command || !command.type) return false;
-    if (command.type === 'edit') command = prepareEdit(session.nodes.get(command.id), command);
+    if (command.type === 'inspectProps' || command.mode === 'setSupported') {
+      if (session.stale || !session.capabilities.includes('propSchemaV1')) throw new Error('Page does not support adding properties; rebuild and reload with the latest runtime');
+      if (typeof command.requestId !== 'string' || !command.requestId || command.requestId.length > 128 || !Number.isInteger(command.id) || !session.nodes.has(command.id)) throw new Error('Invalid property query or missing node');
+    }
+    if (command.type === 'inspectProps') command = { type: 'inspectProps', id: command.id, requestId: command.requestId };
+    if (command.type === 'edit') command = command.mode === 'setSupported'
+      ? prepareSupportedEdit(session.nodes.get(command.id), command, session.propSchemas.get(command.id))
+      : prepareEdit(session.nodes.get(command.id), command);
     if (command.type === 'state' && Array.isArray(command.ids)) {
       session.stateNodeIds = command.ids;
     }

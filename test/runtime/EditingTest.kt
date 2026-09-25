@@ -111,5 +111,83 @@ fun main() {
     invoke("upload")
     completeUpload!!(true, null)
     check(!field("screenshotInFlight").getBoolean(liveSession))
+    // Absent Attr fields use typed setters and never depend on an old value's type.
+    val textView = com.tencent.kuikly.core.views.TextView().apply {
+        pagerId = "edit-test"
+        didMoveToParentView()
+        willInit()
+        createFlexNode()
+        createRenderView()
+    }
+    val registry = KDevtoolsPropSchema("test-session")
+    val schema = registry.query(textView)
+    val token = schema.optString("schemaToken")
+    check(!collectViewProps(textView, textView.getViewAttr()).containsKey("backgroundColor"))
+    check(schema.optJSONArray("properties")!!.length() > 20)
+    val colorRead = registry.set(textView, token, "backgroundColor", 2148606515L)
+    check(colorRead.optString("value") == "2148606515")
+    check(textView.getViewAttr().getProp("backgroundColor") is String)
+    registry.set(textView, token, "visibility", false)
+    check(textView.getViewAttr().getProp("visibility") == 0)
+    check(readSupportedProp(textView, "visibility") == false)
+    registry.set(textView, token, "touchEnable", true)
+    check(textView.getViewAttr().getProp("touchEnable") == 1)
+    registry.set(textView, token, "text", "AI added text")
+    check(textView.getViewAttr().getProp("text") == "AI added text")
+    val beforeLayouts = pager.layouts
+    registry.set(textView, token, "fontSize", 24)
+    check(textView.getViewAttr().getProp("fontSize") == 24f && pager.layouts > beforeLayouts)
+    registry.set(textView, token, "padding", 4)
+    fails { registry.set(textView, token, "padding", JSONObject("{\"top\":8,\"right\":-1}")) }
+    check(readSupportedProp(textView, "padding") == 4.0)
+    fails { registry.set(textView, token, "padding", JSONObject("{\"unknown\":1}")) }
+    fails { registry.set(textView, token, "backgroundColor", "#FFFFFF") }
+    fails { registry.set(textView, token, "backgroundColor", 4294967296L) }
+    fails { registry.set(textView, token, "opacity", 1.1) }
+    fails { registry.set(textView, token, "fontSize", 0) }
+    fails { registry.set(textView, token, "visibility", 1) }
+    fails { registry.set(textView, token, "width", 1e40) }
+    fails { registry.set(textView, token, "padding", JSONObject("{\"top\":null}")) }
+    registry.set(textView, token, "width", 1e10)
+    check(readSupportedProp(textView, "width") == 1e10) { "Readback must not overflow the tree's two-decimal display rounding" }
+    registry.set(textView, token, "minWidth", 10)
+    fails { registry.set(textView, token, "maxWidth", 9) }
+    registry.set(textView, token, "flex", 0)
+    registry.set(textView, token, "margin", 0)
+    val supplemented = collectViewProps(textView, textView.getViewAttr()).toMutableMap()
+    check(!supplemented.containsKey("margin"))
+    registry.supplement(textView, supplemented)
+    check(supplemented["margin"] == 0.0 && supplemented["flex"] == 0.0)
+    textView.getViewAttr().margin(5f)
+    registry.supplement(textView, supplemented)
+    check(supplemented["margin"] == 5.0) { "Touched props must re-read business changes" }
+    fails { registry.set(textView, token, "madeUpProperty", 1) }
+    val otherRegistry = KDevtoolsPropSchema("new-session")
+    otherRegistry.query(textView)
+    fails { otherRegistry.set(textView, token, "opacity", 0.5) }
+    registry.prune(emptySet())
+    fails { registry.set(textView, token, "opacity", 0.5) }
+    val newToken = registry.query(textView).optString("schemaToken")
+    check(newToken != token)
+    val queryMethod = session.javaClass.getDeclaredMethod("inspectProps", JSONObject::class.java).apply { isAccessible = true }
+    queryMethod.invoke(session, JSONObject().apply { put("id", textView.nativeRef); put("requestId", "schema-query") })
+    @Suppress("UNCHECKED_CAST")
+    val queried = session.javaClass.getDeclaredField("propSchemaResults").apply { isAccessible = true }.get(session) as List<JSONObject>
+    val sessionToken = queried.last().optString("schemaToken")
+    check(queried.last().optBoolean("ok") && sessionToken.isNotEmpty())
+    apply.invoke(session, JSONObject().apply {
+        put("requestId", "supported-command"); put("id", textView.nativeRef); put("target", "p")
+        put("mode", "setSupported"); put("schemaToken", sessionToken); put("key", "opacity"); put("value", 0.5)
+    })
+    check(results.last().optBoolean("ok") && results.last().optJSONObject("readback")!!.optDouble("value") == 0.5)
+    apply.invoke(session, JSONObject().apply {
+        put("requestId", "expired-command"); put("id", textView.nativeRef); put("target", "p")
+        put("mode", "setSupported"); put("schemaToken", "old"); put("key", "opacity"); put("value", 0.2)
+    })
+    check(!results.last().optBoolean("ok") && results.last().optString("code") == "SCHEMA_EXPIRED")
+    check(textView.getViewAttr().getProp("opacity") == 0.5f)
+    textView.removeRenderView()
+    fails { registry.set(textView, newToken, "opacity", 0.5) }
+    check(registry.query(textView).optJSONArray("properties")!!.length() == 0)
     println("runtime-editing: ok (real Kuikly JVM, generated setters, observable updates, Color, layout, screenshot tree)")
 }

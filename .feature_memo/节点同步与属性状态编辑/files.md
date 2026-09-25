@@ -26,3 +26,7 @@
 - `skills/kuikly-page-inspect/SKILL.md`：AI 修改节点/状态流程。
 - `test/inspect.js`：CLI 真连接集成回归。
 - `test/runtime/EditingTest.kt`：持续上传导致截图饥饿的回归。
+
+## 2026-09-25 新增属性实现
+
+新增 runtime/.../KDevtoolsPropSchema.kt；更新 Editing/Layout/Tree/Session、server values/hub/panel、CLI/page-command、UI protocol/store/Inspector/ElementsPanel/App/styles、skills/kuikly-page-inspect、README/PROTOCOL 中英文。新增 test/page-command-offline.js、panel-schema-offline.js、ui-properties.js；扩展 editing.js、inspect.js、runtime/EditingTest.kt。UI dist 已重新生成（忽略文件）。

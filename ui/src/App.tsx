@@ -97,7 +97,7 @@ export function App({ store }: { store: DevtoolsStore }) {
         <NativeCallsPanel native={session.native ?? []} onClear={() => store.clearActiveBuffers()} />
       ) : (
         <ElementsPanel
-          key={`${tab}-${session.summary.pagerId}`}
+          key={`${tab}-${session.summary.pagerId}-${session.summary.firstSeenAt}`}
           nodes={nodes}
           composeOnly={tab === 'components'}
           selectedId={selectedId}
@@ -106,7 +106,10 @@ export function App({ store }: { store: DevtoolsStore }) {
           onRequestState={requestState}
           onRequestFull={requestFull}
           screenshot={session.screenshot}
-          onEdit={(id, target, key, value) => store.editNode(id, target, key, value)}
+          canSetSupported={store.serverCapabilities.includes('propSchemaV1') && !!session.summary.capabilities?.includes('propSchemaV1')}
+          onQueryProps={(id) => store.queryProps(id, session.summary.pagerId)}
+          onSetSupported={(id, key, value, token) => store.editNode(id, 'p', key, value, token, session.summary.pagerId)}
+          onEdit={(id, target, key, value) => store.editNode(id, target, key, value, undefined, session.summary.pagerId)}
           onCapture={requestShot}
           onLive={requestLive}
         />

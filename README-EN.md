@@ -335,3 +335,16 @@ Targets are `p` (properties), `s` (view state), and `as` (attr state). `--value`
 
 - [ ] Mock network responses.
 - [ ] Mock native module call results.
+
+### Add properties not declared in attr
+
+Select a node and click **＋ 添加属性** (Add property) in the Properties section. Search/select a supported property and enter its value; Enter or blur applies it, Escape cancels. Allowed values and formats appear beside the input. Opening an empty editor does not submit a value. Successful additions become regular inline-editable rows; invalid new values clear the draft and show the reason.
+
+Supported additions include background color, opacity, visibility, touch enablement, dimensions and Flex layout, plus text/color/font size on TextAttr. Virtual nodes, complex gradients/transforms and dynamically adding Kotlin state members are excluded. Colors are converted by the server; eight-digit formats are AARRGGBB. This mode accepts numeric ARGB colors, not theme tokens. Default layout values remain readable after setting them.
+
+```bash
+npx kuikly-devtools inspect props --pager 7 --id 42
+npx kuikly-devtools inspect edit --pager 7 --id 42 --target p --key backgroundColor --value '"#80C8FF"' --set-supported
+```
+
+`--set-supported` queries fresh device capabilities, sends a single set operation and waits for device confirmation. The default edit command retains its existing-fields-only behavior. Locate the latest node ID; a button background generally belongs to its text node's parent container. Restart the server, refresh the panel, and rebuild/reload the instrumented page after upgrading. Updating the server alone is insufficient. Update installed project skills with `init-skill --force` (overwrites local customizations to that skill).
